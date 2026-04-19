@@ -18,10 +18,20 @@ from datetime import datetime
 APP_PASSWORD     = ""       # 🔐 你的登录密码
 JSONBIN_API_KEY  = ""                # 🔑 JSONBin API Key
 JSONBIN_BIN_ID   = ""                # 📦 JSONBin Bin ID
+TIMEZONE_OFFSET = 8
 
 # ═══════════════════════════════════════════════════
 #  以下代码不需要修改
 # ═══════════════════════════════════════════════════
+
+# ---------- 时间工具 ----------
+from datetime import timedelta
+
+def now_str():
+    """返回带时区偏移的当前时间字符串"""
+    utc_now = datetime.utcnow()
+    local_now = utc_now + timedelta(hours=TIMEZONE_OFFSET)
+    return local_now.strftime("%Y-%m-%d %H:%M")
 
 # ---------- 页面配置 ----------
 st.set_page_config(
@@ -143,7 +153,6 @@ def save_data(data):
     local_save(data)
 
 
-# ---------- 自定义样式 ----------
 # ---------- 自定义样式 ----------
 
 def on_theme_change():
@@ -519,7 +528,7 @@ with tab1:
         data["total_earned"] += points
         data["action_log"].append(
             {
-                "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "time": now_str(),
                 "task": task_desc or "(未填写)",
                 "attribute": attr_key,
                 "points": points,
@@ -574,7 +583,7 @@ with tab2:
         data["total_earned"] += 1
         data["resistance_log"].append(
             {
-                "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "time": now_str(),
                 "reason": reason,
                 "detail": detail or "(未填写)",
                 "strategy": strategy or "(未填写)",
@@ -650,7 +659,7 @@ with tab3:
                         # 记录兑换历史
                         data["redemption_log"].append(
                             {
-                                "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                                "time": now_str(),
                                 "reward_name": reward["name"],
                                 "cost": cost,
                             }
@@ -846,7 +855,7 @@ with tab5:
     st.download_button(
         label="下载 JSON 备份",
         data=json.dumps(data, ensure_ascii=False, indent=2),
-        file_name="life_rpg_backup_" + datetime.now().strftime("%Y%m%d") + ".json",
+        file_name="life_rpg_backup_" + now_str().split(" ")[0].replace("-", "") + ".json",
         mime="application/json",
         use_container_width=True,
     )
