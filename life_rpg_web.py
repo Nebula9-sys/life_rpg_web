@@ -536,7 +536,8 @@ with tab1:
         )
         if points >= 20:
             st.balloons()
-
+            
+        st.rerun()   
 
 # ════════ Tab 2：阻力复盘 ════════
 with tab2:
@@ -590,8 +591,9 @@ with tab2:
         )
         if strategy:
             st.markdown("> 📌 **你的改进策略**: " + strategy)
-
-
+            
+        st.rerun()
+        
 # ════════ Tab 3：奖励商店 ════════
 with tab3:
     st.markdown("### 🏆 奖励商店")
