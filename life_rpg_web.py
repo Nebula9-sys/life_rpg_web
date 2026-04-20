@@ -442,10 +442,10 @@ with st.sidebar:
                 if cloud_data:
                     st.session_state.data = cloud_data
                     data = cloud_data
-                    queue_toast("✅ 已拉取云端最新数据")
+                    st.success("✅ 已拉取云端最新数据")
                     st.rerun()
                 else:
-                    queue_toast("⚠️ 同步失败")
+                    st.success("⚠️ 同步失败")
     else:
         st.warning("💾 仅本地存档")
         st.caption("配置 JSONBin 后可手机同步")
