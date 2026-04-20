@@ -149,9 +149,12 @@ def load_data():
 
 
 def save_data(data):
-    cloud_save(data)
+    cloud_ok = cloud_save(data)
     local_save(data)
-
+    if cloud_ok:
+        st.toast("☁️ 云存档已同步", icon="✅")
+    elif API_KEY and BIN_ID:
+        st.toast("⚠️ 云端同步失败，已存本地", icon="💾")
 
 # ---------- 自定义样式 ----------
 
@@ -344,7 +347,46 @@ code {
 .block-container {
     padding-top: 2rem !important;
 }
+
+/* ═══════════════════════════════════
+   移动端适配
+   ═══════════════════════════════════ */
+@media (max-width: 768px) {
+    /* 减少左右留白，给内容更多空间 */
+    .block-container {
+        padding-left: 1rem !important;
+        padding-right: 1rem !important;
+        padding-top: 1rem !important;
+    }
+    /* 标题小一点 */
+    h1 { font-size: 1.6rem !important; }
+    h2 { font-size: 1.4rem !important; }
+    h3 { font-size: 1.2rem !important; }
+    /* 数值面板数字小一点 */
+    [data-testid="stMetricValue"] {
+        font-size: 1.6rem !important;
+    }
+    [data-testid="stMetricLabel"] {
+        font-size: 0.85rem !important;
+    }
+    /* Tab 标签字小一点，不换行 */
+    .stTabs [data-baseweb="tab"] {
+        font-size: 0.8rem !important;
+        padding: 0.4rem 0.6rem !important;
+        white-space: nowrap;
+    }
+    /* 按钮不要太肥 */
+    .stButton > button {
+        padding: 0.4rem 0.8rem !important;
+        font-size: 0.9rem !important;
+    }
+    /* 表格缩小 */
+    .stTable {
+        font-size: 0.8rem !important;
+    }
+}
 </style>
+
 """
     css = tpl.replace("[THEME_NAME]", theme_name)
     for key, val in t.items():
@@ -539,14 +581,14 @@ with tab1:
 
         new_val = data["stats"][attr_key]
         new_lv = new_val // 50
-        st.success(
-            "🎉 **+" + str(points) + " " + attr_key + "！** 当前: "
-            + str(new_val) + " (Lv." + str(new_lv) + ")"
+        st.toast(
+            "🎉 +" + str(points) + " " + attr_key + "！当前 " + str(new_val),
+            icon="✅"
         )
         if points >= 20:
             st.balloons()
-            
-        st.rerun()   
+
+        st.rerun()
 
 # ════════ Tab 2：阻力复盘 ════════
 with tab2:
@@ -593,14 +635,11 @@ with tab2:
         st.session_state.data = data
 
         count = len(data["resistance_log"])
-        st.success(
-            "🔥 阻力已记录！ +1 Willpower | 你已直面 **"
-            + str(count)
-            + "** 次阻力"
+        st.toast(
+            "🔥 +1 Willpower | 直面阻力 " + str(count) + " 次",
+            icon="💪"
         )
-        if strategy:
-            st.markdown("> 📌 **你的改进策略**: " + strategy)
-            
+
         st.rerun()
         
 # ════════ Tab 3：奖励商店 ════════
@@ -712,16 +751,23 @@ with tab4:
         if not action_logs:
             st.info("还没有记录 → 去完成任务吧！")
         else:
-            st.caption("共 " + str(len(action_logs)) + " 条记录（显示最近 30 条）")
+            st.caption("共 " + str(len(action_logs)) + " 条记录")
+            show_count_action = st.slider(
+                "显示条数", 
+                min_value=10, 
+                max_value=min(len(action_logs), 200), 
+                value=min(30, len(action_logs)),
+                key="show_count_action"
+            )
             st.markdown("---")
-            for entry in reversed(action_logs[-30:]):
+            for entry in reversed(action_logs[-show_count_action:]):
+                
                 attr_emoji = {
                     "Productivity": "⚡",
                     "Creativity": "💡",
                     "Willpower": "🔥",
                     "Vitality": "💚",
                 }.get(entry.get("attribute", ""), "•")
-
                 header = (
                     attr_emoji
                     + " +"
@@ -743,8 +789,15 @@ with tab4:
             st.info("还没有复盘记录")
         else:
             st.caption("共 " + str(len(resist_logs)) + " 次直面阻力 💪")
+            show_count_resist = st.slider(
+                "显示条数", 
+                min_value=10, 
+                max_value=min(len(resist_logs), 200), 
+                value=min(30, len(resist_logs)),
+                key="show_count_resist"
+            )
             st.markdown("---")
-            for entry in reversed(resist_logs[-30:]):
+            for entry in reversed(resist_logs[-show_count_resist:]):
                 header = (
                     str(entry.get("reason", "?"))
                     + " — "
