@@ -53,7 +53,7 @@ API_KEY  = get_secret("JSONBIN_API_KEY", JSONBIN_API_KEY)
 BIN_ID   = get_secret("JSONBIN_BIN_ID", JSONBIN_BIN_ID)
 
 # ---------- Session State 初始化 ----------
-for k, v in {"authed": False, "data": None, "theme": "🫧 莫兰迪蓝", "pending_toasts": []}.items():
+for k, v in {"authed": False, "data": None, "theme": "🌌 莫兰迪蓝", "pending_toasts": []}.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
@@ -160,7 +160,7 @@ def save_data(data):
 
 def on_theme_change():
     """主题切换回调：在页面重绘前更新 session_state"""
-    st.session_state["theme"] = st.session_state.get("theme_select", "🫧 莫兰迪蓝")
+    st.session_state["theme"] = st.session_state.get("theme_select", "🌌 莫兰迪蓝")
 
 
 def queue_toast(msg, icon="✅"):
