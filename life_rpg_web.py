@@ -53,7 +53,7 @@ API_KEY  = get_secret("JSONBIN_API_KEY", JSONBIN_API_KEY)
 BIN_ID   = get_secret("JSONBIN_BIN_ID", JSONBIN_BIN_ID)
 
 # ---------- Session State 初始化 ----------
-for k, v in {"authed": False, "data": None, "theme": "🌌 莫兰迪蓝"}.items():
+for k, v in {"authed": False, "data": None, "theme": "🫧 莫兰迪蓝", "pending_toasts": []}.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
@@ -152,15 +152,28 @@ def save_data(data):
     cloud_ok = cloud_save(data)
     local_save(data)
     if cloud_ok:
-        st.toast("☁️ 云存档已同步", icon="✅")
+        queue_toast("☁️ 云存档已同步", icon="✅")
     elif API_KEY and BIN_ID:
-        st.toast("⚠️ 云端同步失败，已存本地", icon="💾")
+        queue_toast("⚠️ 云端同步失败，已存本地", icon="💾")
 
 # ---------- 自定义样式 ----------
 
 def on_theme_change():
     """主题切换回调：在页面重绘前更新 session_state"""
-    st.session_state["theme"] = st.session_state.get("theme_select", "🌌 莫兰迪蓝")
+    st.session_state["theme"] = st.session_state.get("theme_select", "🫧 莫兰迪蓝")
+
+
+def queue_toast(msg, icon="✅"):
+    """把气泡消息存进队列，等页面刷新后再弹出"""
+    st.session_state.pending_toasts.append({"msg": msg, "icon": icon})
+
+
+def show_pending_toasts():
+    """渲染队列里的气泡，然后清空"""
+    if st.session_state.pending_toasts:
+        for t in st.session_state.pending_toasts:
+            queue_toast(t["msg"], icon=t["icon"])
+        st.session_state.pending_toasts = []
 
 
 def get_theme_css(theme_name):
@@ -448,10 +461,10 @@ with st.sidebar:
                 if cloud_data:
                     st.session_state.data = cloud_data
                     data = cloud_data
-                    st.toast("✅ 已拉取云端最新数据")
+                    queue_toast("✅ 已拉取云端最新数据")
                     st.rerun()
                 else:
-                    st.toast("⚠️ 同步失败")
+                    queue_toast("⚠️ 同步失败")
     else:
         st.warning("💾 仅本地存档")
         st.caption("配置 JSONBin 后可手机同步")
@@ -476,6 +489,13 @@ with st.sidebar:
         st.session_state.authed = False
         st.session_state.data = None
         st.rerun()
+
+# -------- 属性面板 --------
+stats = data["stats"]
+total = sum(stats.values())
+
+# -------- 弹出待显示的气泡 --------
+show_pending_toasts()
 
 # -------- 属性面板 --------
 stats = data["stats"]
@@ -581,7 +601,7 @@ with tab1:
 
         new_val = data["stats"][attr_key]
         new_lv = new_val // 50
-        st.toast(
+        queue_toast(
             "🎉 +" + str(points) + " " + attr_key + "！当前 " + str(new_val),
             icon="✅"
         )
@@ -635,7 +655,7 @@ with tab2:
         st.session_state.data = data
 
         count = len(data["resistance_log"])
-        st.toast(
+        queue_toast(
             "🔥 +1 Willpower | 直面阻力 " + str(count) + " 次",
             icon="💪"
         )
