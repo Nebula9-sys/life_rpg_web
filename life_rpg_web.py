@@ -58,6 +58,22 @@ for k, v in {"authed": False, "data": None, "theme": "🌌 莫兰迪蓝"}.items(
         st.session_state[k] = v
 
 # ---------- 默认数据 ----------
+def rebuild_stats_from_logs(data):
+    """从历史日志重建真实属性值，修复被错扣的分数"""
+    new_stats = {"Productivity": 0, "Creativity": 0, "Willpower": 0, "Vitality": 0}
+    # 任务记录
+    for a in data.get("action_log", []):
+        attr = a.get("attribute")
+        pts = a.get("points", 0)
+        if attr in new_stats:
+            new_stats[attr] += pts
+    # 阻力复盘：每条 +1 意志力
+    for _ in data.get("resistance_log", []):
+        new_stats["Willpower"] += 1
+    data["stats"] = new_stats
+    return data
+
+
 def new_data():
     return {
         "stats": {
@@ -473,11 +489,9 @@ with st.sidebar:
 
 # -------- 属性面板 --------
 stats = data["stats"]
-total = sum(stats.values())
-
-# -------- 属性面板 --------
-stats = data["stats"]
-total = sum(stats.values())
+# ✅ 积分 = 累计赚的 - 累计花的（属性不再参与，永不被扣）
+total_spent = sum(r.get("cost", 0) for r in data.get("redemption_log", []))
+total = data.get("total_earned", 0) - total_spent
 
 st.markdown("## ⚔️ 属性面板")
 
@@ -674,15 +688,7 @@ with tab3:
             with col_btn:
                 if can_buy:
                     if st.button("兑换", key="r_" + str(i), type="primary"):
-                        # 扣积分
-                        to_pay = cost
-                        for attr in ["Productivity", "Creativity", "Willpower", "Vitality"]:
-                            if to_pay <= 0:
-                                break
-                            take = min(data["stats"][attr], to_pay)
-                            data["stats"][attr] -= take
-                            to_pay -= take
-                        # 记录兑换历史
+                        # ✅ 不再扣属性！只记录兑换历史
                         data["redemption_log"].append(
                             {
                                 "time": now_str(),
@@ -698,9 +704,10 @@ with tab3:
                             + " — 好好享受！"
                         )
                         st.balloons()
-                        st.rerun()
+                        # st.rerun() 已删除（防灰屏）
                 else:
                     st.button("积分不够", disabled=True, key="r_" + str(i))
+
 
     # 兑换历史摘要
     if redemption_log:
@@ -874,7 +881,7 @@ with tab5:
     # -- 危险区域 --
     st.markdown("---")
     st.markdown("#### ⚠️ 危险区域")
-    col_r1, col_r2 = st.columns(2)
+    col_r1, col_r2, col_r3 = st.columns(3)
 
     with col_r1:
         if st.button("🔄 重置属性为0", type="secondary"):
@@ -893,6 +900,20 @@ with tab5:
             st.session_state.data = data
             st.success("✅ 已恢复初始状态")
             st.rerun()
+
+    with col_r3:
+        if st.button("🩹 修复属性(找回错扣分)", type="primary"):
+            data = rebuild_stats_from_logs(data)
+            save_data(data)
+            st.session_state.data = data
+            s = data["stats"]
+            st.success(
+                f"✅ 已从历史重建属性！\n\n"
+                f"⚡{s['Productivity']} 💡{s['Creativity']} "
+                f"🔥{s['Willpower']} 💚{s['Vitality']}"
+            )
+            st.rerun()
+
 
     # -- 备份 --
     st.markdown("---")
