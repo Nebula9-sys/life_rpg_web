@@ -487,48 +487,14 @@ with st.sidebar:
         st.session_state.data = None
         st.rerun()
 
-# -------- 属性面板 --------
+# -------- 属性面板（占位：实际渲染在文件末尾，确保即时刷新）--------
+stats_placeholder = st.container()
+
+# 供下方各 Tab 使用的积分（进入本次脚本时的值）
 stats = data["stats"]
 # ✅ 积分 = 累计赚的 - 累计花的（属性不再参与，永不被扣）
 total_spent = sum(r.get("cost", 0) for r in data.get("redemption_log", []))
 total = data.get("total_earned", 0) - total_spent
-
-st.markdown("## ⚔️ 属性面板")
-
-attr_display = [
-    ("⚡ 生产力", "Productivity", "工作产出 · 任务完成 · 效率"),
-    ("💡 创造力", "Creativity",  "新想法 · 创作表达 · 创意解题"),
-    ("🔥 意志力", "Willpower",   "克服阻力 · 坚持习惯 · 自律"),
-    ("💚 精力",   "Vitality",    "运动 · 休息 · 健康管理"),
-]
-
-cols = st.columns(4)
-for i, (label, key, desc) in enumerate(attr_display):
-    with cols[i]:
-        val = stats[key]
-        level = val // 50
-        next_lv = 50 - (val % 50)
-        st.metric(label, str(val), delta="Lv." + str(level))
-        st.progress(min((val % 50) / 50, 1.0))
-        st.caption(desc)
-        st.caption("距 Lv." + str(level + 1) + " 还需 " + str(next_lv))
-
-col_info1, col_info2 = st.columns(2)
-with col_info1:
-    st.markdown("💰 **当前积分: " + str(total) + "**")
-with col_info2:
-    st.markdown("📈 **累计获得: " + str(data["total_earned"]) + "**")
-with st.expander("📖 属性说明 & 加分举例"):
-    st.markdown("""
-| 属性 | 是什么 | 怎么加分 | 举例 |
-|:---:|:---|:---|:---|
-| ⚡ 生产力 | 做事产出的能力和效率 | 完成工作任务、交付成果 | 写完报告 ✅、回复积压邮件 ✅、整理项目文档 ✅、按时交付功能 ✅ |
-| 💡 创造力 | 产生新想法、新表达的能力 | 任何创造性活动 | 写作/写诗 ✅、画画/设计 ✅、头脑风暴 ✅、找到更好的解决方案 ✅、学新技能 ✅ |
-| 🔥 意志力 | 克服阻力、坚持做该做的事 | 克服困难、坚持习惯 | 闹钟响了就起 ✅、拒绝刷手机 ✅、做完不想做的事 ✅、**记录阻力复盘 +1** ✅ |
-| 💚 精力 | 身体和心理的能量储备 | 照顾自己的身体 | 运动30分钟 ✅、健康饮食 ✅、早睡 ✅、冥想 ✅、散步 ✅、体检 ✅ |
-
-> 💡 **小贴士**：同一件事可能同时提升多个属性！比如「早起去跑步」= 意志力 + 精力，选你觉得最主要的那个就好。
-""")
 
 st.markdown("---")
 
@@ -925,3 +891,51 @@ with tab5:
         mime="application/json",
         use_container_width=True,
     )
+
+    
+
+# ════════════════════════════════════════════════════════
+#  ⚔️ 属性面板（回填到页面顶部占位，读取最新 data → 即时刷新）
+# ════════════════════════════════════════════════════════
+with stats_placeholder:
+    _stats = data["stats"]
+    _spent = sum(r.get("cost", 0) for r in data.get("redemption_log", []))
+    _total = data.get("total_earned", 0) - _spent
+
+    st.markdown("## ⚔️ 属性面板")
+
+    _attr_display = [
+        ("⚡ 生产力", "Productivity", "工作产出 · 任务完成 · 效率"),
+        ("💡 创造力", "Creativity",  "新想法 · 创作表达 · 创意解题"),
+        ("🔥 意志力", "Willpower",   "克服阻力 · 坚持习惯 · 自律"),
+        ("💚 精力",   "Vitality",    "运动 · 休息 · 健康管理"),
+    ]
+
+    _cols = st.columns(4)
+    for _i, (_label, _key, _desc) in enumerate(_attr_display):
+        with _cols[_i]:
+            _val = _stats[_key]
+            _level = _val // 50
+            _next_lv = 50 - (_val % 50)
+            st.metric(_label, str(_val), delta="Lv." + str(_level))
+            st.progress(min((_val % 50) / 50, 1.0))
+            st.caption(_desc)
+            st.caption("距 Lv." + str(_level + 1) + " 还需 " + str(_next_lv))
+
+    _ci1, _ci2 = st.columns(2)
+    with _ci1:
+        st.markdown("💰 **当前积分: " + str(_total) + "**")
+    with _ci2:
+        st.markdown("📈 **累计获得: " + str(data["total_earned"]) + "**")
+
+    with st.expander("📖 属性说明 & 加分举例"):
+        st.markdown("""
+| 属性 | 是什么 | 怎么加分 | 举例 |
+|:---:|:---|:---|:---|
+| ⚡ 生产力 | 做事产出的能力和效率 | 完成工作任务、交付成果 | 写完报告 ✅、回复积压邮件 ✅、整理项目文档 ✅、按时交付功能 ✅ |
+| 💡 创造力 | 产生新想法、新表达的能力 | 任何创造性活动 | 写作/写诗 ✅、画画/设计 ✅、头脑风暴 ✅、找到更好的解决方案 ✅、学新技能 ✅ |
+| 🔥 意志力 | 克服阻力、坚持做该做的事 | 克服困难、坚持习惯 | 闹钟响了就起 ✅、拒绝刷手机 ✅、做完不想做的事 ✅、**记录阻力复盘 +1** ✅ |
+| 💚 精力 | 身体和心理的能量储备 | 照顾自己的身体 | 运动30分钟 ✅、健康饮食 ✅、早睡 ✅、冥想 ✅、散步 ✅、体检 ✅ |
+
+> 💡 **小贴士**：同一件事可能同时提升多个属性！比如「早起去跑步」= 意志力 + 精力，选你觉得最主要的那个就好。
+""")
