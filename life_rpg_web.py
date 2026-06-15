@@ -27,7 +27,15 @@ TIMEZONE_OFFSET = 8
 # ═══════════════════════════════════════════════════
 
 # ---------- 时间工具 ----------
+# ---------- 时间工具 ----------
 from datetime import timedelta
+
+def now_str():
+    """返回带时区偏移的当前时间字符串"""
+    utc_now = datetime.utcnow()
+    local_now = utc_now + timedelta(hours=TIMEZONE_OFFSET)
+    return local_now.strftime("%Y-%m-%d %H:%M")
+
 
 def encouragement_for(attr_key):
     """根据属性随机返回一句鼓励语"""
@@ -171,6 +179,8 @@ def new_data():
             {"name": "🚶 出门散步", "attribute": "Vitality", "points": 5},
             {"name": "💧 喝水", "attribute": "Vitality", "points": 1},
         ],
+    }
+
 
 
 # ---------- 云存档 ----------
