@@ -9,7 +9,9 @@ import streamlit as st
 import requests
 import json
 import os
+import random
 from datetime import datetime
+
 
 # ═══════════════════════════════════════════════════
 #  ⚙️ 配置区 —— 必须修改以下 3 项
@@ -27,11 +29,80 @@ TIMEZONE_OFFSET = 8
 # ---------- 时间工具 ----------
 from datetime import timedelta
 
-def now_str():
-    """返回带时区偏移的当前时间字符串"""
-    utc_now = datetime.utcnow()
-    local_now = utc_now + timedelta(hours=TIMEZONE_OFFSET)
-    return local_now.strftime("%Y-%m-%d %H:%M")
+def encouragement_for(attr_key):
+    """根据属性随机返回一句鼓励语"""
+    messages = {
+        "Productivity": [
+            "⚡ 你推进了现实世界的一小格。",
+            "⚡ 世界上的待办少了一点点。",
+            "⚡ 有一块拼图被你放回了位置。",
+            "⚡ 你把想法变成了行动。",
+            "⚡ 今天的进度条动了。",
+            "⚡ 你没有只是想，你真的做了。",
+            "⚡ 混乱被你整理出了一点秩序。",
+            "⚡ 一个任务被你从脑内搬到了现实。",
+            "⚡ 很好，现实被你撬动了一点。",
+            "⚡ 你的行动正在累计成结果。",
+            "⚡ 小小推进，也是推进。",
+            "⚡ 你完成的不只是任务，是对自己的承诺。",
+            "⚡ 你给未来的自己减轻了一点负担。",
+            "⚡ 这一分不是数字，是你动手的证据。",
+            "⚡ 你把今天往前推了一步。",
+        ],
+        "Creativity": [
+            "💡 一个想法被你带到了世界上。",
+            "💡 你给世界添了一点自己的颜色。",
+            "💡 灵感没有被浪费，它被你接住了。",
+            "💡 今天有一点新的东西诞生了。",
+            "💡 你不是在空想，你在创造。",
+            "💡 一个模糊的念头变清楚了一点。",
+            "💡 你让内心的东西有了形状。",
+            "💡 创造不是等状态完美，是先留下痕迹。",
+            "💡 这一点表达，会在未来发光。",
+            "💡 你把不可见的东西变得可见了。",
+            "💡 你的脑海宇宙又开了一盏灯。",
+            "💡 不需要伟大，出现就已经很好。",
+            "💡 你今天也在练习把自己说出来。",
+            "💡 灵感喜欢拜访正在行动的人。",
+            "💡 你种下了一个可能性。",
+        ],
+        "Willpower": [
+            "🔥 你不是没有阻力，你是带着阻力也动了。",
+            "🔥 阻力出现了，但它没有赢。",
+            "🔥 你今天没有被惯性完全带走。",
+            "🔥 能开始，就已经很了不起。",
+            "🔥 你把自己从卡住里拉出来了一点。",
+            "🔥 这不是硬撑，是你在练习选择。",
+            "🔥 你没有等状态完美才行动。",
+            "🔥 今天的你，往前挪了一小步。",
+            "🔥 你证明了：困难可以被看见，也可以被穿过。",
+            "🔥 直面阻力，本身就是经验值。",
+            "🔥 你在和惯性谈判，而且赢回了一点主动权。",
+            "🔥 就算很难，你也没有完全放弃自己。",
+            "🔥 这一步很小，但方向是对的。",
+            "🔥 你没有靠情绪行动，你靠选择行动。",
+            "🔥 带着不情愿也能前进，这很强。",
+        ],
+        "Vitality": [
+            "💚 照顾自己也是主线任务。",
+            "💚 你的身体收到了一个友善信号。",
+            "💚 你不是机器，你值得被维护。",
+            "💚 能量不是凭空来的，你正在补回来。",
+            "💚 今天你没有忽略自己的身体。",
+            "💚 休息、喝水、吃饭，都不是小事。",
+            "💚 你在给未来的自己充电。",
+            "💚 温柔对待身体，也是长期主义。",
+            "💚 你把自己放回了优先级里。",
+            "💚 这不是偷懒，是维护生命系统。",
+            "💚 你今天也在学习照顾这个身体。",
+            "💚 好好活着，本身就是重要任务。",
+            "💚 你给自己加了一点续航。",
+            "💚 慢下来不是失败，是恢复。",
+            "💚 主线角色需要回血，你做得对。",
+        ],
+    }
+    return random.choice(messages.get(attr_key, ["✅ 你又向前走了一点。"]))
+
 
 # ---------- 页面配置 ----------
 st.set_page_config(
@@ -93,7 +164,13 @@ def new_data():
         ],
         "redemption_log": [],   # 兑换历史
         "total_earned": 0,
-    }
+        "quick_actions": [
+            {"name": "🌅 起床", "attribute": "Willpower", "points": 1},
+            {"name": "💻 开始工作", "attribute": "Productivity", "points": 5},
+            {"name": "✍️ 写 25 分钟", "attribute": "Creativity", "points": 5},
+            {"name": "🚶 出门散步", "attribute": "Vitality", "points": 5},
+            {"name": "💧 喝水", "attribute": "Vitality", "points": 1},
+        ],
 
 
 # ---------- 云存档 ----------
@@ -509,58 +586,132 @@ with tab1:
     st.markdown("### 📝 记录完成的任务")
     st.caption("每完成一件事，就赚一点经验值。积少成多。")
 
-    c1, c2 = st.columns(2)
-    with c1:
-        attr_choice = st.selectbox(
-            "提升哪个属性？",
-            [
-                "⚡ 生产力 (Productivity)",
-                "💡 创造力 (Creativity)",
-                "🔥 意志力 (Willpower)",
-                "💚 精力 (Vitality)",
-            ],
-            key="task_attr",
+    # ---------- 快捷记录 ----------
+    st.markdown("#### 🐾 我动了一下")
+    st.caption("低能量时，点一下也算数。不想写也可以，这就是一次微小启动。")
+
+    quick_actions = data.get("quick_actions", [])
+
+    attr_icon_map = {
+        "Productivity": "⚡",
+        "Creativity": "💡",
+        "Willpower": "🔥",
+        "Vitality": "💚",
+    }
+
+    if not quick_actions:
+        st.info("还没有快捷按钮。可以去「设置」里添加常用动作。")
+    else:
+        # 每行 3 个按钮，手机端也比较舒服
+        for row_start in range(0, len(quick_actions), 3):
+            cols = st.columns(3)
+            for j, action in enumerate(quick_actions[row_start:row_start + 3]):
+                idx = row_start + j
+                name = action.get("name", "未命名动作")
+                attr_key = action.get("attribute", "Productivity")
+                points = int(action.get("points", 1))
+                icon = attr_icon_map.get(attr_key, "✨")
+
+                with cols[j]:
+                    btn_label = f"{name}\n\n{icon} +{points}"
+                    if st.button(btn_label, key="quick_action_" + str(idx), use_container_width=True):
+                        # 更新属性与积分
+                        data["stats"][attr_key] += points
+                        data["total_earned"] += points
+
+                        # 写入历史日志
+                        data["action_log"].append(
+                            {
+                                "time": now_str(),
+                                "task": "快捷记录：" + name,
+                                "attribute": attr_key,
+                                "points": points,
+                            }
+                        )
+
+                        save_data(data)
+                        st.session_state.data = data
+
+                        new_val = data["stats"][attr_key]
+                        msg = encouragement_for(attr_key)
+                        st.success(
+                            f"✅ {name} | +{points} {attr_key}，当前 {new_val}\n\n{msg}",
+                            icon="🐾"
+                        )
+
+                        if points >= 10:
+                            st.balloons()
+
+    st.markdown("---")
+
+    # ---------- 详细记录 ----------
+    with st.expander("✍️ 想写详细一点？展开详细记录", expanded=False):
+        st.caption("如果你有余力，可以把这次行动记录得更具体。没有余力也没关系，快捷记录已经算数。")
+
+        c1, c2 = st.columns(2)
+        with c1:
+            attr_choice = st.selectbox(
+                "提升哪个属性？",
+                [
+                    "⚡ 生产力 (Productivity)",
+                    "💡 创造力 (Creativity)",
+                    "🔥 意志力 (Willpower)",
+                    "💚 精力 (Vitality)",
+                ],
+                key="task_attr",
+            )
+        with c2:
+            diff_choice = st.selectbox(
+                "任务难度",
+                ["🟢 小事 → +5", "🟡 普通 → +10", "🔴 突破 → +20"],
+                key="task_diff",
+            )
+
+        task_desc = st.text_input(
+            "做了什么？",
+            placeholder="可以不写，点提交也算数。比如：完成了项目报告",
+            key="task_desc",
         )
-    with c2:
-        diff_choice = st.selectbox(
-            "任务难度",
-            ["🟢 小事 → +5", "🟡 普通 → +10", "🔴 突破 → +20"],
-            key="task_diff",
-        )
 
-    task_desc = st.text_input(
-        "做了什么？", placeholder="比如：完成了项目报告", key="task_desc"
-    )
-
-    if st.button("✅ 提交记录", use_container_width=True, type="primary"):
-        attr_map = {
-            "⚡ 生产力 (Productivity)": "Productivity",
-            "💡 创造力 (Creativity)": "Creativity",
-            "🔥 意志力 (Willpower)": "Willpower",
-            "💚 精力 (Vitality)": "Vitality",
-        }
-        diff_map = {"🟢 小事 → +5": 5, "🟡 普通 → +10": 10, "🔴 突破 → +20": 20}
-
-        attr_key = attr_map[attr_choice]
-        points = diff_map[diff_choice]
-
-        data["stats"][attr_key] += points
-        data["total_earned"] += points
-        data["action_log"].append(
-            {
-                "time": now_str(),
-                "task": task_desc or "(未填写)",
-                "attribute": attr_key,
-                "points": points,
+        if st.button("✅ 提交详细记录", use_container_width=True, type="primary"):
+            attr_map = {
+                "⚡ 生产力 (Productivity)": "Productivity",
+                "💡 创造力 (Creativity)": "Creativity",
+                "🔥 意志力 (Willpower)": "Willpower",
+                "💚 精力 (Vitality)": "Vitality",
             }
-        )
-        save_data(data)
-        st.session_state.data = data
+            diff_map = {
+                "🟢 小事 → +5": 5,
+                "🟡 普通 → +10": 10,
+                "🔴 突破 → +20": 20,
+            }
 
-        new_val = data["stats"][attr_key]
-        st.success(f"🎉 +{points} {attr_key}！当前 {new_val}", icon="✅")
-        if points >= 20:
-            st.balloons()
+            attr_key = attr_map[attr_choice]
+            points = diff_map[diff_choice]
+
+            data["stats"][attr_key] += points
+            data["total_earned"] += points
+            data["action_log"].append(
+                {
+                    "time": now_str(),
+                    "task": task_desc or "(未填写)",
+                    "attribute": attr_key,
+                    "points": points,
+                }
+            )
+            save_data(data)
+            st.session_state.data = data
+
+            new_val = data["stats"][attr_key]
+            msg = encouragement_for(attr_key)
+            st.success(
+                f"🎉 +{points} {attr_key}！当前 {new_val}\n\n{msg}",
+                icon="✅"
+            )
+
+            if points >= 20:
+                st.balloons()
+
 
 # ════════ Tab 2：阻力复盘 ════════
 with tab2:
@@ -805,6 +956,92 @@ with tab4:
 with tab5:
     st.markdown("### ⚙️ 设置")
 
+    # -- 快捷按钮设置 --
+    st.markdown("#### 🐾 快捷按钮设置")
+    st.caption("这些按钮会出现在「记录任务」里的「🐾 我动了一下」区域。适合常用动作、微启动、低能量记录。")
+
+    attr_options = {
+        "⚡ 生产力 Productivity": "Productivity",
+        "💡 创造力 Creativity": "Creativity",
+        "🔥 意志力 Willpower": "Willpower",
+        "💚 精力 Vitality": "Vitality",
+    }
+
+    qa1, qa2, qa3 = st.columns([2, 1.4, 1])
+    with qa1:
+        new_q_name = st.text_input(
+            "按钮名称",
+            placeholder="比如：🌙 睡前收尾",
+            key="new_q_name",
+        )
+    with qa2:
+        new_q_attr_label = st.selectbox(
+            "提升属性",
+            list(attr_options.keys()),
+            key="new_q_attr",
+        )
+    with qa3:
+        new_q_points = st.selectbox(
+            "加分",
+            [1, 5, 10],
+            index=1,
+            key="new_q_points",
+        )
+
+    if st.button("➕ 添加快捷按钮", use_container_width=True):
+        if new_q_name.strip():
+            data.setdefault("quick_actions", [])
+            data["quick_actions"].append(
+                {
+                    "name": new_q_name.strip(),
+                    "attribute": attr_options[new_q_attr_label],
+                    "points": int(new_q_points),
+                }
+            )
+            save_data(data)
+            st.session_state.data = data
+            st.success(
+                "✅ 已添加快捷按钮: "
+                + new_q_name.strip()
+                + " (+"
+                + str(new_q_points)
+                + ")"
+            )
+        else:
+            st.error("请输入按钮名称")
+
+    st.markdown("##### 当前快捷按钮")
+
+    quick_actions = data.get("quick_actions", [])
+
+    if quick_actions:
+        quick_names = [
+            q.get("name", "未命名动作")
+            + " | "
+            + q.get("attribute", "Productivity")
+            + " +"
+            + str(q.get("points", 1))
+            for q in quick_actions
+        ]
+
+        del_q_choice = st.selectbox(
+            "选择要删除的快捷按钮",
+            quick_names,
+            key="del_quick_action",
+        )
+
+        if st.button("🗑️ 删除选中快捷按钮"):
+            idx = quick_names.index(del_q_choice)
+            removed = data["quick_actions"].pop(idx)
+            save_data(data)
+            st.session_state.data = data
+            st.success("✅ 已删除快捷按钮: " + removed.get("name", "未命名动作"))
+    else:
+        st.caption("暂无快捷按钮。添加几个常用动作吧。")
+
+    st.markdown("---")
+    
+
     # -- 添加奖励 --
     st.markdown("#### ➕ 添加自定义奖励")
     c5, c6 = st.columns([2, 1])
@@ -939,3 +1176,4 @@ with stats_placeholder:
 
 > 💡 **小贴士**：同一件事可能同时提升多个属性！比如「早起去跑步」= 意志力 + 精力，选你觉得最主要的那个就好。
 """)
+
