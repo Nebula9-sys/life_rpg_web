@@ -1076,7 +1076,7 @@ with tab5:
     # ---- 每日加分柱状图 ----
     st.markdown("#### 📊 每日加分（近 14 天）")
 
-     bar_range_choice = st.selectbox(
+    bar_range_choice = st.selectbox(
         "📅 查看范围",
         [7, 14, 30, 60, 90],
         index=1,
