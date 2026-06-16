@@ -10,6 +10,7 @@ import requests
 import json
 import os
 import random
+import plotly.graph_objects as go
 from datetime import datetime
 
 
@@ -26,7 +27,6 @@ TIMEZONE_OFFSET = 8
 #  以下代码不需要修改
 # ═══════════════════════════════════════════════════
 
-# ---------- 时间工具 ----------
 # ---------- 时间工具 ----------
 from datetime import timedelta
 
@@ -586,8 +586,8 @@ total = data.get("total_earned", 0) - total_spent
 st.markdown("---")
 
 # -------- 功能标签页 --------
-tab1, tab2, tab3, tab4, tab5 = st.tabs(
-    ["📝 记录任务", "🚧 阻力复盘", "🏆 奖励商店", "📋 历史日志", "⚙️ 设置"]
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
+    ["📝 记录任务", "🚧 阻力复盘", "🏆 奖励商店", "📋 历史日志", "📊 统计", "⚙️ 设置"]
 )
 
 
@@ -683,6 +683,13 @@ with tab1:
             key="task_desc",
         )
 
+        task_date = st.date_input(
+            "📅 这是哪天做的？",
+            value=(datetime.utcnow() + timedelta(hours=TIMEZONE_OFFSET)).date(),
+            key="task_date",
+        )
+        st.caption("默认是今天。如果是补记之前的事，可以改日期。")
+
         if st.button("✅ 提交详细记录", use_container_width=True, type="primary"):
             attr_map = {
                 "⚡ 生产力 (Productivity)": "Productivity",
@@ -699,11 +706,18 @@ with tab1:
             attr_key = attr_map[attr_choice]
             points = diff_map[diff_choice]
 
+            # 确定记录时间：补记日期用当天12:00，今天用当前时间
+            today_local = (datetime.utcnow() + timedelta(hours=TIMEZONE_OFFSET)).date()
+            if task_date == today_local:
+                task_time = now_str()
+            else:
+                task_time = task_date.strftime("%Y-%m-%d") + " 12:00"
+
             data["stats"][attr_key] += points
             data["total_earned"] += points
             data["action_log"].append(
                 {
-                    "time": now_str(),
+                    "time": task_time,
                     "task": task_desc or "(未填写)",
                     "attribute": attr_key,
                     "points": points,
@@ -960,10 +974,199 @@ with tab4:
                     + str(entry.get("cost", 0))
                     + " pts"
                 )
-
-
-# ════════ Tab 5：设置 ════════
+                
+                
+# ════════ Tab 5：统计 ════════
 with tab5:
+    st.markdown("### 📊 统计")
+
+    # ---------- 汇总每日数据 ----------
+    daily = {}
+    for entry in data.get("action_log", []):
+        ds = entry.get("time", "")[:10]
+        if not ds:
+            continue
+        pts = entry.get("points", 0)
+        attr = entry.get("attribute", "")
+        if ds not in daily:
+            daily[ds] = {"Productivity": 0, "Creativity": 0, "Willpower": 0, "Vitality": 0, "total": 0}
+        if attr in daily[ds]:
+            daily[ds][attr] += pts
+        daily[ds]["total"] += pts
+
+    for entry in data.get("resistance_log", []):
+        ds = entry.get("time", "")[:10]
+        if not ds:
+            continue
+        if ds not in daily:
+            daily[ds] = {"Productivity": 0, "Creativity": 0, "Willpower": 0, "Vitality": 0, "total": 0}
+        daily[ds]["Willpower"] += 1
+        daily[ds]["total"] += 1
+
+    today_date = (datetime.utcnow() + timedelta(hours=TIMEZONE_OFFSET)).date()
+
+    # ---- 数据摘要 ----
+    st.markdown("#### 📈 总览")
+
+    total_days = len(daily)
+    total_points = data.get("total_earned", 0)
+    avg_daily = round(total_points / max(total_days, 1), 1)
+
+    # 连续记录天数
+    streak = 0
+    check_date = today_date
+    while True:
+        ds = check_date.strftime("%Y-%m-%d")
+        if ds in daily:
+            streak += 1
+            check_date -= timedelta(days=1)
+        else:
+            break
+
+    s1, s2, s3 = st.columns(3)
+    with s1:
+        st.metric("📅 活跃天数", str(total_days))
+    with s2:
+        st.metric("📈 累计积分", str(total_points))
+    with s3:
+        st.metric("🔥 连续记录", str(streak) + " 天")
+
+    s4, s5 = st.columns(2)
+    with s4:
+        st.metric("📊 日均积分", str(avg_daily))
+    with s5:
+        total_records = len(data.get("action_log", [])) + len(data.get("resistance_log", []))
+        st.metric("📝 总记录数", str(total_records))
+
+    st.markdown("---")
+
+    # ---- 属性分布环形图 ----
+    st.markdown("#### 🍩 属性分布")
+
+    stats_total = data["stats"]
+    pie_labels = ["⚡ 生产力", "💡 创造力", "🔥 意志力", "💚 精力"]
+    pie_values = [
+        stats_total.get("Productivity", 0),
+        stats_total.get("Creativity", 0),
+        stats_total.get("Willpower",  0),
+        stats_total.get("Vitality",   0),
+    ]
+    pie_colors = ["#7a9eb0", "#c7958d", "#d48090", "#7fc5ca"]
+
+    if sum(pie_values) > 0:
+        fig_donut = go.Figure(data=[go.Pie(
+            labels=pie_labels,
+            values=pie_values,
+            hole=0.55,
+            marker=dict(colors=pie_colors),
+            textinfo="label+percent",
+            textposition="outside",
+        )])
+        fig_donut.update_layout(
+            showlegend=False,
+            margin=dict(t=20, b=20, l=20, r=20),
+            height=280,
+        )
+        st.plotly_chart(fig_donut, use_container_width=True)
+    else:
+        st.info("还没有数据，记录一些任务后就能看到分布图了！")
+
+    st.markdown("---")
+
+    # ---- 每日加分柱状图 ----
+    st.markdown("#### 📊 每日加分（近 14 天）")
+
+    days_range = 14
+    bar_dates = []
+    for i in range(days_range - 1, -1, -1):
+        d = today_date - timedelta(days=i)
+        bar_dates.append(d.strftime("%Y-%m-%d"))
+
+    prod_vals = [daily.get(d, {}).get("Productivity", 0) for d in bar_dates]
+    crea_vals = [daily.get(d, {}).get("Creativity", 0) for d in bar_dates]
+    will_vals = [daily.get(d, {}).get("Willpower", 0) for d in bar_dates]
+    vitl_vals = [daily.get(d, {}).get("Vitality", 0) for d in bar_dates]
+
+    bar_labels = [d[5:] for d in bar_dates]
+
+    fig_bar = go.Figure()
+    fig_bar.add_trace(go.Bar(name="⚡ 生产力", x=bar_labels, y=prod_vals, marker_color="#7a9eb0"))
+    fig_bar.add_trace(go.Bar(name="💡 创造力", x=bar_labels, y=crea_vals, marker_color="#c7958d"))
+    fig_bar.add_trace(go.Bar(name="🔥 意志力", x=bar_labels, y=will_vals, marker_color="#d48090"))
+    fig_bar.add_trace(go.Bar(name="💚 精力", x=bar_labels, y=vitl_vals, marker_color="#7fc5ca"))
+    fig_bar.update_layout(
+        barmode="stack",
+        height=300,
+        margin=dict(t=10, b=30, l=30, r=10),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+        xaxis_title=None,
+        yaxis_title="积分",
+    )
+    st.plotly_chart(fig_bar, use_container_width=True)
+
+    st.markdown("---")
+
+    # ---- 活动热力图 ----
+    st.markdown("#### 🔥 活动热力图（近 12 周）")
+    st.caption("颜色越深 = 当天获得积分越多。空白 = 没有记录。")
+
+    weeks_back = 12
+    start_monday = today_date - timedelta(days=today_date.weekday() + 7 * (weeks_back - 1))
+
+    week_starts = []
+    current = start_monday
+    while current <= today_date:
+        week_starts.append(current)
+        current += timedelta(days=7)
+
+    dow_labels = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+    n_weeks = len(week_starts)
+
+    z_data = [[0] * n_weeks for _ in range(7)]
+    hover_text = [[""] * n_weeks for _ in range(7)]
+
+    for wi, monday in enumerate(week_starts):
+        for dow in range(7):
+            d = monday + timedelta(days=dow)
+            if d > today_date:
+                z_data[dow][wi] = -1  # 未来日期标记
+                hover_text[dow][wi] = ""
+            else:
+                ds = d.strftime("%Y-%m-%d")
+                pts = daily.get(ds, {}).get("total", 0)
+                z_data[dow][wi] = pts
+                weekday_cn = ["一", "二", "三", "四", "五", "六", "日"][dow]
+                hover_text[dow][wi] = f"{ds} 周{weekday_cn}<br>{int(pts)} 积分"
+
+    x_labels = [w.strftime("%m/%d") for w in week_starts]
+
+    fig_heat = go.Figure(data=go.Heatmap(
+        z=z_data,
+        x=x_labels,
+        y=dow_labels,
+        text=hover_text,
+        hovertemplate="%{text}<extra></extra>",
+        colorscale=[
+            [0, "#e8e8e8"],
+            [0.01, "#d4edda"],
+            [0.2, "#7dcc7d"],
+            [0.5, "#3da63d"],
+            [1, "#1a6b1a"],
+        ],
+        showscale=False,
+        xgap=3,
+        ygap=3,
+        zmin=0,
+    ))
+    fig_heat.update_layout(
+        height=220,
+        margin=dict(t=10, b=30, l=50, r=20),
+    )
+    st.plotly_chart(fig_heat, use_container_width=True)
+
+
+# ════════ Tab 6：设置 ════════
+with tab6:
     st.markdown("### ⚙️ 设置")
 
     # -- 快捷按钮设置 --
