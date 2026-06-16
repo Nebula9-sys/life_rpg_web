@@ -1076,7 +1076,14 @@ with tab5:
     # ---- 每日加分柱状图 ----
     st.markdown("#### 📊 每日加分（近 14 天）")
 
-    days_range = 14
+     bar_range_choice = st.selectbox(
+        "📅 查看范围",
+        [7, 14, 30, 60, 90],
+        index=1,
+        format_func=lambda x: f"近 {x} 天",
+        key="bar_range",
+    )
+    days_range = bar_range_choice
     bar_dates = []
     for i in range(days_range - 1, -1, -1):
         d = today_date - timedelta(days=i)
@@ -1112,7 +1119,14 @@ with tab5:
     st.markdown("#### 🔥 活动热力图（近 12 周）")
     st.caption("颜色越深 = 当天获得积分越多。空白 = 没有记录。")
 
-    weeks_back = 12
+    heat_range_choice = st.selectbox(
+        "🗓️ 热力图范围",
+        [4, 8, 12, 24, 52, 104],
+        index=2,
+        format_func=lambda x: f"近 {x} 周",
+        key="heat_range",
+    )
+    weeks_back = heat_range_choice
     start_monday = today_date - timedelta(days=today_date.weekday() + 7 * (weeks_back - 1))
 
     week_starts = []
@@ -1391,4 +1405,4 @@ with stats_placeholder:
 
 > 💡 **小贴士**：同一件事可能同时提升多个属性！比如「早起去跑步」= 意志力 + 精力，选你觉得最主要的那个就好。
 """)
-
+        
