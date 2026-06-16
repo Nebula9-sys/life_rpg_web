@@ -1088,6 +1088,7 @@ with tab5:
     vitl_vals = [daily.get(d, {}).get("Vitality", 0) for d in bar_dates]
 
     bar_labels = [d[5:] for d in bar_dates]
+    bar_labels = [str(x) for x in bar_labels]  # 强制转为文本，防止 Plotly 自动解析日期
 
     fig_bar = go.Figure()
     fig_bar.add_trace(go.Bar(name="⚡ 生产力", x=bar_labels, y=prod_vals, marker_color="#7a9eb0"))
@@ -1101,6 +1102,7 @@ with tab5:
         legend=dict(orientation="h", yanchor="bottom", y=1.02),
         xaxis_title=None,
         yaxis_title="积分",
+        xaxis=dict(type="category"),  # 当作分类轴，不自动解析日期
     )
     st.plotly_chart(fig_bar, use_container_width=True)
 
