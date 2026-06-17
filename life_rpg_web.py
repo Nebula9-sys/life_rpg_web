@@ -481,11 +481,13 @@ code {
     .stTable {
         font-size: 0.8rem !important;
     }
-    /* ✅ 新增：强制列布局在手机端保持横向 */
+    /* ✅ 强制列布局在手机端保持横向 */
     [data-testid="stHorizontalBlock"] {
         flex-direction: row !important;
+        flex-wrap: nowrap !important;
     }
     [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+        min-width: 0 !important;
         width: auto !important;
         flex: 1 1 0 !important;
     }
