@@ -455,99 +455,41 @@ code {
    移动端适配
    ═══════════════════════════════════ */
 @media (max-width: 768px) {
-    /* 整体内边距收紧 */
-    .block-container {
-        padding-left: 0.8rem !important;
-        padding-right: 0.8rem !important;
-        padding-top: 4.5rem !important;
-        padding-bottom: 1rem !important;
-    }
-
-    /* 标题更紧凑 */
-    h1 { font-size: 1.5rem !important; margin-bottom: 0.3rem !important; }
-    h2 { font-size: 1.3rem !important; margin-bottom: 0.3rem !important; }
-    h3 { font-size: 1.1rem !important; margin-bottom: 0.2rem !important; }
-    h4 { font-size: 1rem !important; margin-bottom: 0.2rem !important; }
-
-    /* caption 更小更紧凑 */
-    .stCaption, .stCaption p {
-        font-size: 0.72rem !important;
-        margin-bottom: 0.1rem !important;
-        line-height: 1.3 !important;
-    }
-
-    /* 数值面板缩小 */
+    /* 标题小一点 */
+    h1 { font-size: 1.6rem !important; }
+    h2 { font-size: 1.4rem !important; }
+    h3 { font-size: 1.2rem !important; }
+    /* 数值面板数字小一点 */
     [data-testid="stMetricValue"] {
-        font-size: 1.3rem !important;
+        font-size: 1.6rem !important;
     }
     [data-testid="stMetricLabel"] {
-        font-size: 0.78rem !important;
+        font-size: 0.85rem !important;
     }
-
-    /* Tab 标签紧凑不换行 */
+    /* Tab 标签字小一点，不换行 */
     .stTabs [data-baseweb="tab"] {
-        font-size: 0.72rem !important;
-        padding: 0.3rem 0.45rem !important;
+        font-size: 0.8rem !important;
+        padding: 0.4rem 0.6rem !important;
         white-space: nowrap;
     }
-
-    /* 所有按钮更紧凑 */
+    /* 按钮不要太肥 */
     .stButton > button {
-        padding: 0.3rem 0.5rem !important;
-        font-size: 0.82rem !important;
-        line-height: 1.25 !important;
+        padding: 0.4rem 0.8rem !important;
+        font-size: 0.9rem !important;
     }
-    /* 按钮内段落去掉多余间距 */
-    .stButton > button p {
-        margin-bottom: 0 !important;
-        font-size: 0.82rem !important;
-        line-height: 1.25 !important;
-    }
-
-    /* 减少元素间距 — 关键优化 */
-    .stVerticalBlock > div {
-        margin-bottom: 0.25rem !important;
-    }
-    /* 减少列间距 */
-    [data-testid="stHorizontalBlock"] {
-        gap: 0.3rem !important;
-    }
-
-    /* expander 更紧凑 */
-    .streamlit-expanderHeader {
-        font-size: 0.82rem !important;
-        padding: 0.35rem 0.5rem !important;
-    }
-    [data-testid="stExpander"] {
-        padding: 0.5rem !important;
-    }
-
-    /* progress bar 更细 */
-    .stProgress > div > div {
-        height: 5px !important;
-    }
-
     /* 表格缩小 */
     .stTable {
-        font-size: 0.72rem !important;
+        font-size: 0.8rem !important;
     }
-
-    /* selectbox / input 更紧凑 */
-    .stSelectbox, .stTextInput, .stTextArea {
-        margin-bottom: 0.3rem !important;
+    /* ✅ 新增：强制列布局在手机端保持横向 */
+    [data-testid="stHorizontalBlock"] {
+        flex-direction: row !important;
     }
-
-    /* markdown 段落间距收紧 */
-    .stMarkdown, .stMarkdown p {
-        margin-bottom: 0.2rem !important;
-    }
-
-    /* 分割线少占空间 */
-    hr {
-        margin: 0.4rem 0 !important;
+    [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+        width: auto !important;
+        flex: 1 1 0 !important;
     }
 }
-
 </style>
 
 """
@@ -689,7 +631,7 @@ with tab1:
                 icon = attr_icon_map.get(attr_key, "✨")
 
                 with cols[j]:
-                    btn_label = f"{name}  {icon}+{points}"
+                    btn_label = f"{name}\n\n{icon} +{points}"
                     if st.button(btn_label, key="quick_action_" + str(idx), use_container_width=True):
                         # 更新属性与积分
                         data["stats"][attr_key] += points
@@ -1443,16 +1385,18 @@ with stats_placeholder:
         ("💚 精力",   "Vitality",    "运动 · 休息 · 健康管理"),
     ]
 
-    _cols = st.columns(4)
-    for _i, (_label, _key, _desc) in enumerate(_attr_display):
-        with _cols[_i]:
-            _val = _stats[_key]
-            _level = _val // 50
-            _next_lv = 50 - (_val % 50)
-            st.metric(_label, str(_val), delta="Lv." + str(_level))
-            st.progress(min((_val % 50) / 50, 1.0))
-            st.caption(_desc)
-            st.caption("距 Lv." + str(_level + 1) + " 还需 " + str(_next_lv))
+    # 两行两列：手机端 2 个一行，电脑端也好看
+    for _row_start in range(0, len(_attr_display), 2):
+        _cols = st.columns(2)
+        for _j, (_label, _key, _desc) in enumerate(_attr_display[_row_start:_row_start + 2]):
+            with _cols[_j]:
+                _val = _stats[_key]
+                _level = _val // 50
+                _next_lv = 50 - (_val % 50)
+                st.metric(_label, str(_val), delta="Lv." + str(_level))
+                st.progress(min((_val % 50) / 50, 1.0))
+                st.caption(_desc)
+                st.caption("距 Lv." + str(_level + 1) + " 还需 " + str(_next_lv))
 
     _ci1, _ci2 = st.columns(2)
     with _ci1:
@@ -1471,3 +1415,4 @@ with stats_placeholder:
 
 > 💡 **小贴士**：同一件事可能同时提升多个属性！比如「早起去跑步」= 意志力 + 精力，选你觉得最主要的那个就好。
 """)
+        
