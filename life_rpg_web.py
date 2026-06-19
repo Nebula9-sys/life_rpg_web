@@ -543,22 +543,30 @@ st.markdown(
 
         /* 属性面板专用小字 */
         .attr-desc {
-            font-size: 0.66rem !important;
-            line-height: 1.15 !important;
+            font-size: 0.72rem !important;
+            line-height: 1.35 !important;
             opacity: 0.72 !important;
-            margin-top: 0.1rem !important;
-            margin-bottom: 0.05rem !important;
+            margin-top: 0.35rem !important;
+            margin-bottom: 0.08rem !important;
             white-space: nowrap !important;
             overflow: hidden !important;
             text-overflow: ellipsis !important;
         }
 
         .attr-next {
-            font-size: 0.64rem !important;
-            line-height: 1.15 !important;
+            font-size: 0.70rem !important;
+            line-height: 1.35 !important;
             opacity: 0.65 !important;
-            margin-bottom: 0.25rem !important;
+            margin-bottom: 0.45rem !important;
             white-space: nowrap !important;
+        }
+
+        .attr-row-spacer {
+            height: 0.85rem !important;
+        }
+
+        .attr-summary-spacer {
+            height: 0.35rem !important;
         }
 
         /* 属性面板数字稍微控制一下大小 */
@@ -1464,8 +1472,15 @@ with stats_placeholder:
                     + "</div>",
                     unsafe_allow_html=True,
                 )
-                
+
+        # 每一行属性后加一点呼吸空间
+        st.markdown('<div class="attr-row-spacer"></div>', unsafe_allow_html=True)
+
+    # 属性面板和积分区之间再加一点空间
+    st.markdown('<div class="attr-summary-spacer"></div>', unsafe_allow_html=True)
+
     _ci1, _ci2 = st.columns(2)
+
     with _ci1:
         st.markdown("💰 **当前积分: " + str(_total) + "**")
     with _ci2:
