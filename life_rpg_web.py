@@ -481,16 +481,6 @@ code {
     .stTable {
         font-size: 0.8rem !important;
     }
-    /* ✅ 强制列布局在手机端保持横向 */
-    [data-testid="stHorizontalBlock"] {
-        flex-direction: row !important;
-        flex-wrap: nowrap !important;
-    }
-    [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
-        min-width: 0 !important;
-        width: auto !important;
-        flex: 1 1 0 !important;
-    }
 }
 </style>
 
@@ -534,6 +524,55 @@ if not st.session_state.authed:
             else:
                 st.error("❌ 密码错误")
     st.stop()
+
+# ---------- 登录后移动端布局修复 ----------
+st.markdown(
+    """
+    <style>
+    @media (max-width: 768px) {
+        /* 只在登录后生效：强制 columns 在手机端保持横排 */
+        [data-testid="stHorizontalBlock"] {
+            flex-direction: row !important;
+            flex-wrap: nowrap !important;
+        }
+        [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+            min-width: 0 !important;
+            width: auto !important;
+            flex: 1 1 0 !important;
+        }
+
+        /* 属性面板的小字说明缩小一点 */
+        .stCaption, .stCaption p {
+            font-size: 0.68rem !important;
+            line-height: 1.2 !important;
+        }
+
+        /* 属性面板数字稍微控制一下大小 */
+        [data-testid="stMetricValue"] {
+            font-size: 1.45rem !important;
+        }
+
+        [data-testid="stMetricLabel"] {
+            font-size: 0.82rem !important;
+        }
+
+        /* 按钮文字略微缩小，但不要太小 */
+        .stButton > button {
+            font-size: 0.82rem !important;
+            line-height: 1.2 !important;
+            padding: 0.45rem 0.45rem !important;
+        }
+
+        .stButton > button p {
+            font-size: 0.82rem !important;
+            line-height: 1.2 !important;
+            margin-bottom: 0 !important;
+        }
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 # ═══════════════════════════════════════════════════
 #  主界面（登录后）
@@ -622,10 +661,10 @@ with tab1:
     if not quick_actions:
         st.info("还没有快捷按钮。可以去「设置」里添加常用动作。")
     else:
-        # 每行 3 个按钮，手机端也比较舒服
-        for row_start in range(0, len(quick_actions), 3):
-            cols = st.columns(3)
-            for j, action in enumerate(quick_actions[row_start:row_start + 3]):
+        # 每行 2 个按钮：手机端更稳定、更好按
+        for row_start in range(0, len(quick_actions), 2):
+            cols = st.columns(2)
+            for j, action in enumerate(quick_actions[row_start:row_start + 2]):
                 idx = row_start + j
                 name = action.get("name", "未命名动作")
                 attr_key = action.get("attribute", "Productivity")
@@ -633,7 +672,7 @@ with tab1:
                 icon = attr_icon_map.get(attr_key, "✨")
 
                 with cols[j]:
-                    btn_label = f"{name}\n\n{icon} +{points}"
+                    btn_label = f"{name}\n{icon}+{points}"
                     if st.button(btn_label, key="quick_action_" + str(idx), use_container_width=True):
                         # 更新属性与积分
                         data["stats"][attr_key] += points
