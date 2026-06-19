@@ -562,7 +562,7 @@ st.markdown(
         }
 
         .attr-row-spacer {
-            height: 0.85rem !important;
+            height: 1.2rem !important;
         }
 
         .attr-summary-spacer {
