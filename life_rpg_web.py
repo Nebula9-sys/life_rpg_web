@@ -529,7 +529,17 @@ if not st.session_state.authed:
 st.markdown(
     """
     <style>
+    /* PC 端属性面板间距 */
+    .attr-row-spacer {
+        height: 2.2rem !important;
+    }
+
+    .attr-summary-spacer {
+        height: 0.8rem !important;
+    }
+
     @media (max-width: 768px) {
+    
         /* 只在登录后生效：强制 columns 在手机端保持横排 */
         [data-testid="stHorizontalBlock"] {
             flex-direction: row !important;
@@ -562,7 +572,7 @@ st.markdown(
         }
 
         .attr-row-spacer {
-            height: 1.2rem !important;
+            height: 0.85rem !important;
         }
 
         .attr-summary-spacer {
