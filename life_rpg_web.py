@@ -541,10 +541,24 @@ st.markdown(
             flex: 1 1 0 !important;
         }
 
-        /* 属性面板的小字说明缩小一点 */
-        .stCaption, .stCaption p {
-            font-size: 0.68rem !important;
-            line-height: 1.2 !important;
+        /* 属性面板专用小字 */
+        .attr-desc {
+            font-size: 0.66rem !important;
+            line-height: 1.15 !important;
+            opacity: 0.72 !important;
+            margin-top: 0.1rem !important;
+            margin-bottom: 0.05rem !important;
+            white-space: nowrap !important;
+            overflow: hidden !important;
+            text-overflow: ellipsis !important;
+        }
+
+        .attr-next {
+            font-size: 0.64rem !important;
+            line-height: 1.15 !important;
+            opacity: 0.65 !important;
+            margin-bottom: 0.25rem !important;
+            white-space: nowrap !important;
         }
 
         /* 属性面板数字稍微控制一下大小 */
@@ -858,26 +872,26 @@ with tab3:
             can_buy = total >= cost
             times = count_redeemed(reward["name"])
 
-            col_name, col_cost, col_times, col_btn = st.columns([2.5, 1, 0.8, 1.2])
+            col_info, col_btn = st.columns([3, 1])
 
-            with col_name:
+            with col_info:
                 st.markdown("🎁 **" + reward["name"] + "**")
 
-            with col_cost:
                 if can_buy:
-                    st.caption("✅ " + str(cost) + " pts")
+                    cost_text = "✅ " + str(cost) + " pts"
                 else:
-                    st.caption("❌ " + str(cost) + " pts (差 " + str(cost - total) + ")")
+                    cost_text = "❌ " + str(cost) + " pts（差 " + str(cost - total) + "）"
 
-            with col_times:
                 if times > 0:
-                    st.caption("已兑 " + str(times) + " 次")
+                    times_text = "已兑 " + str(times) + " 次"
                 else:
-                    st.caption("—")
+                    times_text = "尚未兑换"
+
+                st.caption(cost_text + " ｜ " + times_text)
 
             with col_btn:
                 if can_buy:
-                    if st.button("兑换", key="r_" + str(i), type="primary"):
+                    if st.button("兑换", key="r_" + str(i), type="primary", use_container_width=True):
                         # ✅ 不再扣属性！只记录兑换历史
                         data["redemption_log"].append(
                             {
@@ -894,9 +908,10 @@ with tab3:
                             + " — 好好享受！"
                         )
                         st.balloons()
-                        # st.rerun() 已删除（防灰屏）
                 else:
-                    st.button("积分不够", disabled=True, key="r_" + str(i))
+                    st.button("积分不够", disabled=True, key="r_" + str(i), use_container_width=True)
+
+            st.markdown("---")
 
 
     # 兑换历史摘要
@@ -1436,9 +1451,20 @@ with stats_placeholder:
                 _next_lv = 50 - (_val % 50)
                 st.metric(_label, str(_val), delta="Lv." + str(_level))
                 st.progress(min((_val % 50) / 50, 1.0))
-                st.caption(_desc)
-                st.caption("距 Lv." + str(_level + 1) + " 还需 " + str(_next_lv))
 
+                st.markdown(
+                    '<div class="attr-desc">' + _desc + '</div>',
+                    unsafe_allow_html=True,
+                )
+                st.markdown(
+                    '<div class="attr-next">距 Lv.'
+                    + str(_level + 1)
+                    + " 还需 "
+                    + str(_next_lv)
+                    + "</div>",
+                    unsafe_allow_html=True,
+                )
+)
     _ci1, _ci2 = st.columns(2)
     with _ci1:
         st.markdown("💰 **当前积分: " + str(_total) + "**")
