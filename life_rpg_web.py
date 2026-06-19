@@ -1464,7 +1464,7 @@ with stats_placeholder:
                     + "</div>",
                     unsafe_allow_html=True,
                 )
-)
+                
     _ci1, _ci2 = st.columns(2)
     with _ci1:
         st.markdown("💰 **当前积分: " + str(_total) + "**")
