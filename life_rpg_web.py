@@ -28,13 +28,18 @@ TIMEZONE_OFFSET = 8
 # ═══════════════════════════════════════════════════
 
 # ---------- 时间工具 ----------
-from datetime import timedelta
+from datetime import timedelta, timezone
+
+def now_local():
+    """返回当前本地时间 datetime（带时区）"""
+    return datetime.now(timezone(timedelta(hours=TIMEZONE_OFFSET)))
 
 def now_str():
-    """返回带时区偏移的当前时间字符串"""
-    utc_now = datetime.utcnow()
-    local_now = utc_now + timedelta(hours=TIMEZONE_OFFSET)
-    return local_now.strftime("%Y-%m-%d %H:%M")
+    """返回带时区偏移的当前时间字符串。与 now_local() 同源，时区一致。"""
+    return now_local().strftime("%Y-%m-%d %H:%M")
+
+MOOD_OPTIONS = ["🙂", "😴", "😐", "😄", "🚀"]
+VALID_MOODS = set(MOOD_OPTIONS)
 
 
 def encouragement_for(attr_key):
@@ -109,7 +114,354 @@ def encouragement_for(attr_key):
             "💚 主线角色需要回血，你做得对。",
         ],
     }
-    return random.choice(messages.get(attr_key, ["✅ 你又向前走了一点。"]))
+    return random.choice(messages.get(attr_key, ["✨ 你又向前走了一点。"]))
+
+
+def show_achievement_notifications(newly):
+    if newly:
+        st.balloons()
+    for ach in newly:
+        st.success(
+            f"🏅 **成就解锁！{ach['name']}**\n\n{ach['desc']}\n\n💰 Bonus +{ach['bonus']} pts！",
+            icon="🏅"
+        )
+
+
+VALID_ATTRS = {"Productivity", "Creativity", "Willpower", "Vitality"}
+
+
+# ---------- 成就系统 ----------
+ACHIEVEMENT_DEFS = [
+    # 累积型
+    {"id": "hundred_pts",      "name": "💯 百分起步",  "desc": "总积分突破 100",       "category": "cumulative", "bonus": 20},
+    {"id": "five_hundred_pts", "name": "🏆 五百达成",  "desc": "总积分突破 500",       "category": "cumulative", "bonus": 30},
+    {"id": "thousand_pts",     "name": "🌟 千分玩家",  "desc": "总积分突破 1000",      "category": "cumulative", "bonus": 50},
+    {"id": "five_thousand_pts","name": "💎 万分之路",  "desc": "总积分突破 5000",      "category": "cumulative", "bonus": 60},
+    {"id": "week_active",      "name": "🗓️ 一周坚持",  "desc": "活跃天数满 7 天",      "category": "cumulative", "bonus": 20},
+    {"id": "month_active",     "name": "📅 月度达人",  "desc": "活跃天数满 30 天",     "category": "cumulative", "bonus": 40},
+    {"id": "hundred_active",   "name": "💯 百日筑基",  "desc": "活跃天数满 100 天",    "category": "cumulative", "bonus": 60},
+    {"id": "resistance_10",    "name": "🧠 直面者",    "desc": "阻力复盘满 10 次",     "category": "cumulative", "bonus": 20},
+    {"id": "resistance_30",    "name": "💪 阻力克星",  "desc": "阻力复盘满 30 次",     "category": "cumulative", "bonus": 40},
+    {"id": "redeem_5",         "name": "🎁 懂得犒赏",  "desc": "奖励兑换满 5 次",      "category": "cumulative", "bonus": 15},
+    {"id": "redeem_10",        "name": "🏆 生活达人",  "desc": "奖励兑换满 10 次",     "category": "cumulative", "bonus": 30},
+    # 单日型
+    {"id": "daily_30",         "name": "⚡ 小有产出",  "desc": "单日得分突破 30",      "category": "daily",      "bonus": 20},
+    {"id": "daily_50",         "name": "🔥 产出爆发",  "desc": "单日得分突破 50",      "category": "daily",      "bonus": 40},
+    {"id": "daily_100",        "name": "💥 超级加倍",  "desc": "单日得分突破 100",     "category": "daily",      "bonus": 50},
+    {"id": "daily_balanced",   "name": "⚖️ 均衡发展",  "desc": "单日四维属性全部有得分","category": "daily",      "bonus": 30},
+    {"id": "daily_5_records",  "name": "📝 忙碌一天",  "desc": "单日记录 5 条以上",    "category": "daily",      "bonus": 25},
+    # 特殊行为型
+    {"id": "first_task",       "name": "🎮 启程",      "desc": "第一次记录任务",       "category": "special",    "bonus": 20},
+    {"id": "first_resistance", "name": "🧠 勇敢直面",  "desc": "第一次阻力复盘",       "category": "special",    "bonus": 20},
+    {"id": "first_redeem",     "name": "🎁 首次犒赏",  "desc": "第一次兑换奖励",       "category": "special",    "bonus": 20},
+    {"id": "first_backdate",   "name": "📅 时光回溯",  "desc": "第一次补记过去日期的任务","category": "special",  "bonus": 20},
+    {"id": "streak_7",         "name": "🔥 一周不断",  "desc": "连续记录 7 天",        "category": "special",    "bonus": 40},
+    {"id": "streak_30",        "name": "💎 月度连击",  "desc": "连续记录 30 天",       "category": "special",    "bonus": 60},
+    {"id": "stat_100",         "name": "⭐ 百分属性",  "desc": "任一属性突破 100",     "category": "special",    "bonus": 25},
+    {"id": "stat_500",         "name": "🌟 属性大师",  "desc": "任一属性突破 500",     "category": "special",    "bonus": 50},
+]
+
+
+def check_achievements(data, retroactive=False):
+    """检查并解锁成就。retroactive=True 时标记为追溯解锁（仍发 bonus 积分）。"""
+    action_log = data.get("action_log", [])
+    resistance_log = data.get("resistance_log", [])
+    redemption_log = data.get("redemption_log", [])
+
+    total_earned = data.get("total_earned", 0)
+
+    # streak 计算（含 action_log + resistance_log）
+    daily_set = set(e.get("time", "")[:10] for e in action_log if e.get("time"))
+    daily_set |= set(e.get("time", "")[:10] for e in resistance_log if e.get("time"))
+    active_days = len(daily_set)
+
+    today_str = now_local().strftime("%Y-%m-%d")
+    today_actions = [e for e in action_log if e.get("time", "")[:10] == today_str and e.get("source", "任务") != "成就"]
+    today_resist = [r for r in resistance_log if r.get("time", "")[:10] == today_str]
+    today_total = sum(e.get("points", 0) for e in today_actions) + len(today_resist)
+    today_attrs = set(e.get("attribute", "") for e in today_actions if e.get("points", 0) > 0)
+    if today_resist:
+        today_attrs.add("Willpower")
+    all_four = all(a in today_attrs for a in ["Productivity", "Creativity", "Willpower", "Vitality"])
+
+    today_date = now_local().date()
+    streak = 0
+    check_date = today_date
+    if today_date.strftime("%Y-%m-%d") not in daily_set:
+        check_date = today_date - timedelta(days=1)
+    while True:
+        ds = check_date.strftime("%Y-%m-%d")
+        if ds in daily_set:
+            streak += 1
+            check_date -= timedelta(days=1)
+        else:
+            break
+
+    stat_vals = [v for v in data.get("stats", {}).values() if isinstance(v, (int, float))]
+    max_stat = max(stat_vals) if stat_vals else 0
+    has_backdated = any(e.get("backdated", False) for e in action_log)
+
+    def build_conditions():
+        te = data.get("total_earned", 0)
+        return {
+            "hundred_pts":       te >= 100,
+            "five_hundred_pts":  te >= 500,
+            "thousand_pts":      te >= 1000,
+            "five_thousand_pts": te >= 5000,
+            "week_active":       active_days >= 7,
+            "month_active":      active_days >= 30,
+            "hundred_active":    active_days >= 100,
+            "resistance_10":     len(resistance_log) >= 10,
+            "resistance_30":     len(resistance_log) >= 30,
+            "redeem_5":          len(redemption_log) >= 5,
+            "redeem_10":         len(redemption_log) >= 10,
+            "daily_30":          today_total >= 30,
+            "daily_50":          today_total >= 50,
+            "daily_100":         today_total >= 100,
+            "daily_balanced":    all_four,
+            "daily_5_records":   len(today_actions) + len(today_resist) >= 5,
+            "first_task":        len([e for e in action_log if e.get("source", "任务") != "成就"]) >= 1,
+            "first_resistance":  len(resistance_log) >= 1,
+            "first_redeem":      len(redemption_log) >= 1,
+            "first_backdate":    has_backdated,
+            "streak_7":          streak >= 7,
+            "streak_30":         streak >= 30,
+            "stat_100":          max_stat >= 100,
+            "stat_500":          max_stat >= 500,
+        }
+
+    newly_unlocked = []
+    changed = True
+    while changed:
+        changed = False
+        conditions = build_conditions()
+        for ach in data.get("achievements", []):
+            if ach["unlocked"]:
+                continue
+            if conditions.get(ach["id"], False):
+                ach["unlocked"] = True
+                ach["unlocked_time"] = now_str()
+                data["total_earned"] += ach["bonus"]
+                data["action_log"].append({
+                    "time": now_str(),
+                    "task": "🏅 成就解锁：" + ach["name"],
+                    "attribute": "",
+                    "points": ach["bonus"],
+                    "source": "成就",
+                    "retroactive": retroactive,
+                })
+                newly_unlocked.append(ach)
+                changed = True
+
+    return newly_unlocked
+
+
+# ---------- 周报 / 月报生成 ----------
+def _get_daily_map(data):
+    """从 action_log + resistance_log 构建每日聚合字典"""
+    daily = {}
+    for entry in data.get("action_log", []):
+        ds = entry.get("time", "")[:10]
+        if len(ds) != 10 or ds[4] != "-" or ds[7] != "-":
+            continue
+        if ds not in daily:
+            daily[ds] = {"Productivity": 0, "Creativity": 0, "Willpower": 0, "Vitality": 0, "total": 0, "count": 0}
+        attr = entry.get("attribute", "")
+        pts = entry.get("points", 0)
+        if attr in daily[ds]:
+            daily[ds][attr] += pts
+        daily[ds]["total"] += pts
+        daily[ds]["count"] += 1
+    for entry in data.get("resistance_log", []):
+        ds = entry.get("time", "")[:10]
+        if len(ds) != 10 or ds[4] != "-" or ds[7] != "-":
+            continue
+        if ds not in daily:
+            daily[ds] = {"Productivity": 0, "Creativity": 0, "Willpower": 0, "Vitality": 0, "total": 0, "count": 0}
+        daily[ds]["Willpower"] += 1
+        daily[ds]["total"] += 1
+    return daily
+
+
+def generate_weekly_report(data, as_of_date=None):
+    """生成周报文本（纯模板，零 token）。as_of_date 默认今天，传上周日期则生成上周报告。"""
+    daily = _get_daily_map(data)
+    today = as_of_date or now_local().date()
+
+    # 本周（周一到 as_of_date）
+    monday = today - timedelta(days=today.weekday())
+    week_days = [(monday + timedelta(days=i)) for i in range(7)]
+    week_strs = [d.strftime("%Y-%m-%d") for d in week_days if d <= today]
+
+    # 上周
+    last_monday = monday - timedelta(days=7)
+    last_sunday = monday - timedelta(days=1)
+    last_week_strs = [(last_monday + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
+
+    # 本周数据
+    week_total = sum(daily.get(ds, {}).get("total", 0) for ds in week_strs)
+    week_count = sum(daily.get(ds, {}).get("count", 0) for ds in week_strs)
+    week_attrs = {"Productivity": 0, "Creativity": 0, "Willpower": 0, "Vitality": 0}
+    for ds in week_strs:
+        for k in week_attrs:
+            week_attrs[k] += daily.get(ds, {}).get(k, 0)
+
+    # 上周数据
+    last_week_total = sum(daily.get(ds, {}).get("total", 0) for ds in last_week_strs)
+    diff = week_total - last_week_total
+    diff_pct = round(diff / max(last_week_total, 1) * 100) if last_week_total > 0 else 0
+
+    # 最活跃的一天
+    best_day = None
+    best_pts = 0
+    for ds in week_strs:
+        pts = daily.get(ds, {}).get("total", 0)
+        if pts > best_pts:
+            best_pts = pts
+            best_day = ds
+
+    # 阻力复盘
+    week_resist = [r for r in data.get("resistance_log", []) if r.get("time", "")[:10] in week_strs]
+    resist_reasons = {}
+    for r in week_resist:
+        reason = r.get("reason", "未知")
+        resist_reasons[reason] = resist_reasons.get(reason, 0) + 1
+    top_reason = max(resist_reasons, key=resist_reasons.get) if resist_reasons else None
+
+    # 趋势箭头
+    if diff > 0:
+        trend = f"比上周 +{diff} pts ↑"
+    elif diff < 0:
+        trend = f"比上周 {diff} pts ↓"
+    else:
+        trend = "与上周持平"
+
+    lines = []
+    lines.append(f"📊 本周小结（{week_strs[0]} ~ {week_strs[-1]}）")
+    lines.append("─" * 40)
+    lines.append(f"本周得分：{week_total} pts（{trend}）")
+    if best_day:
+        try:
+            weekday_cn = ["一", "二", "三", "四", "五", "六", "日"][datetime.strptime(best_day, "%Y-%m-%d").weekday()]
+            lines.append(f"最活跃：周{weekday_cn}（{best_pts} pts）")
+        except (ValueError, TypeError):
+            lines.append(f"最活跃：{best_day}（{best_pts} pts）")
+    lines.append(f"记录次数：{week_count} 次")
+    lines.append("")
+
+    attr_labels = {"Productivity": "⚡ 生产力", "Creativity": "💡 创造力", "Willpower": "🔥 意志力", "Vitality": "💚 精力"}
+    lines.append("属性分布：")
+    for k, label in attr_labels.items():
+        pct = round(week_attrs[k] / max(week_total, 1) * 100)
+        lines.append(f"  {label} {week_attrs[k]} pts ({pct}%)")
+    lines.append("")
+
+    if week_resist:
+        lines.append(f"阻力复盘：{len(week_resist)} 次")
+        if top_reason:
+            lines.append(f"  主要原因：{top_reason}（{resist_reasons[top_reason]} 次）")
+        strategies = [r.get("strategy", "") for r in week_resist if r.get("strategy", "") and r.get("strategy", "") != "(未填写)"]
+        if strategies:
+            cleaned = [s.replace("「", "『").replace("」", "』") for s in strategies[:3]]
+            lines.append(f"  策略摘要：「{'」「'.join(cleaned)}」")
+    else:
+        lines.append("阻力复盘：本周无记录")
+
+    return "\n".join(lines)
+
+
+def generate_monthly_report(data):
+    """生成本月月报文本"""
+    daily = _get_daily_map(data)
+    today = now_local().date()
+
+    month_start = today.replace(day=1)
+    month_strs = []
+    d = month_start
+    while d <= today:
+        month_strs.append(d.strftime("%Y-%m-%d"))
+        d += timedelta(days=1)
+
+    # 上月
+    if month_start.month == 1:
+        last_month_start = month_start.replace(year=month_start.year - 1, month=12)
+    else:
+        last_month_start = month_start.replace(month=month_start.month - 1)
+    last_month_end = month_start - timedelta(days=1)
+    last_month_strs = []
+    d = last_month_start
+    while d <= last_month_end:
+        last_month_strs.append(d.strftime("%Y-%m-%d"))
+        d += timedelta(days=1)
+
+    month_total = sum(daily.get(ds, {}).get("total", 0) for ds in month_strs)
+    last_month_total = sum(daily.get(ds, {}).get("total", 0) for ds in last_month_strs)
+    diff = month_total - last_month_total
+
+    month_attrs = {"Productivity": 0, "Creativity": 0, "Willpower": 0, "Vitality": 0}
+    for ds in month_strs:
+        for k in month_attrs:
+            month_attrs[k] += daily.get(ds, {}).get(k, 0)
+
+    active_days = sum(1 for ds in month_strs if ds in daily)
+    month_resist = [r for r in data.get("resistance_log", []) if r.get("time", "")[:10] in month_strs]
+
+    # 最活跃的一天
+    best_day = None
+    best_pts = 0
+    for ds in month_strs:
+        pts = daily.get(ds, {}).get("total", 0)
+        if pts > best_pts:
+            best_pts = pts
+            best_day = ds
+
+    # 阻力复盘统计
+    resist_reasons = {}
+    for r in month_resist:
+        reason = r.get("reason", "未知")
+        resist_reasons[reason] = resist_reasons.get(reason, 0) + 1
+    top_reason = max(resist_reasons, key=resist_reasons.get) if resist_reasons else None
+
+    if diff > 0:
+        trend = f"比上月 +{diff} pts ↑"
+    elif diff < 0:
+        trend = f"比上月 {diff} pts ↓"
+    else:
+        trend = "与上月持平"
+
+    lines = []
+    lines.append(f"📅 月度报告（{month_start.strftime('%Y-%m')}）")
+    lines.append("─" * 40)
+    lines.append(f"本月得分：{month_total} pts（{trend}）")
+    lines.append(f"活跃天数：{active_days} / {len(month_strs)} 天")
+    lines.append(f"日均积分：{round(month_total / max(len(month_strs), 1), 1)}")
+    if best_day:
+        try:
+            weekday_cn = ["一", "二", "三", "四", "五", "六", "日"][datetime.strptime(best_day, "%Y-%m-%d").weekday()]
+            lines.append(f"最活跃：周{weekday_cn} {best_day}（{best_pts} pts）")
+        except (ValueError, TypeError):
+            lines.append(f"最活跃：{best_day}（{best_pts} pts）")
+    lines.append("")
+
+    attr_labels = {"Productivity": "⚡ 生产力", "Creativity": "💡 创造力", "Willpower": "🔥 意志力", "Vitality": "💚 精力"}
+    lines.append("属性分布：")
+    for k, label in attr_labels.items():
+        pct = round(month_attrs[k] / max(month_total, 1) * 100)
+        lines.append(f"  {label} {month_attrs[k]} pts ({pct}%)")
+    lines.append("")
+
+    if month_resist:
+        lines.append(f"阻力复盘：{len(month_resist)} 次")
+        if top_reason:
+            lines.append(f"  主要原因：{top_reason}（{resist_reasons[top_reason]} 次）")
+        strategies = [r.get("strategy", "") for r in month_resist if r.get("strategy", "") and r.get("strategy", "") != "(未填写)"]
+        if strategies:
+            cleaned = [s.replace("「", "『").replace("」", "』") for s in strategies[:3]]
+            lines.append(f"  策略摘要：「{'」「'.join(cleaned)}」")
+    else:
+        lines.append("阻力复盘：本月无记录")
+
+    return "\n".join(lines)
 
 
 # ---------- 页面配置 ----------
@@ -150,6 +502,10 @@ def rebuild_stats_from_logs(data):
     for _ in data.get("resistance_log", []):
         new_stats["Willpower"] += 1
     data["stats"] = new_stats
+    # 同时重建 total_earned（任务积分 + 阻力复盘积分 + 成就 bonus）
+    task_pts = sum(a.get("points", 0) for a in data.get("action_log", []))
+    resist_pts = len(data.get("resistance_log", []))
+    data["total_earned"] = task_pts + resist_pts
     return data
 
 
@@ -172,6 +528,11 @@ def new_data():
         ],
         "redemption_log": [],   # 兑换历史
         "total_earned": 0,
+        "reports": [],          # 周报/月报存档
+        "achievements": [
+            {**a, "unlocked": False, "unlocked_time": None}
+            for a in ACHIEVEMENT_DEFS
+        ],
         "quick_actions": [
             {"name": "🌅 起床", "attribute": "Willpower", "points": 1},
             {"name": "💻 开始工作", "attribute": "Productivity", "points": 5},
@@ -230,14 +591,18 @@ def local_load():
 
 def local_save(data):
     try:
-        with open(LOCAL_FILE, "w", encoding="utf-8") as f:
+        tmp = LOCAL_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
+        os.replace(tmp, LOCAL_FILE)
+        return True
+    except Exception as e:
+        st.error(f"⚠️ 本地保存失败：{e}")
+        return False
 
 
-def load_data():
-    data = cloud_load() or local_load() or new_data()
+def _migrate_data(data):
+    """数据迁移：补字段、兼容旧版、合并成就定义、追溯解锁。"""
     base = new_data()
     for k in base:
         if k not in data:
@@ -248,11 +613,40 @@ def load_data():
     # 兼容旧版：去掉旧的 claimed 字段
     for r in data.get("rewards", []):
         r.pop("claimed", None)
+        r["cost"] = max(r.get("cost", 1), 1)
+    # 合并新成就定义 + 更新已有成就的 bonus/desc（保留 unlocked 状态）
+    existing_map = {a["id"]: a for a in data.get("achievements", [])}
+    for ach_def in ACHIEVEMENT_DEFS:
+        if ach_def["id"] in existing_map:
+            existing_map[ach_def["id"]]["bonus"] = ach_def["bonus"]
+            existing_map[ach_def["id"]]["desc"] = ach_def["desc"]
+            existing_map[ach_def["id"]]["name"] = ach_def["name"]
+            existing_map[ach_def["id"]]["category"] = ach_def["category"]
+        else:
+            data.setdefault("achievements", []).append({
+                **ach_def, "unlocked": False, "unlocked_time": None,
+            })
+    # 追溯解锁：根据历史行为点亮已有成就（发 bonus 积分）
+    newly = check_achievements(data, retroactive=True)
+    if newly:
+        cloud_save(data)
+        local_save(data)
+        st.session_state["retroactive_achievements"] = newly
     return data
 
+
+def load_data():
+    data = cloud_load() or local_load() or new_data()
+    return _migrate_data(data)
+
 def save_data(data):
-    cloud_save(data)
-    local_save(data)
+    cloud_ok = cloud_save(data)
+    local_ok = local_save(data)
+    if not cloud_ok and API_KEY and BIN_ID:
+        st.toast("☁️ 云端保存失败，已保存到本地", icon="⚠️")
+    if not local_ok:
+        st.toast("⚠️ 本地保存也失败了，请检查磁盘空间", icon="🚨")
+    return cloud_ok and local_ok
 
 # ---------- 自定义样式 ----------
 
@@ -272,6 +666,7 @@ def get_theme_css(theme_name):
             "ac": "#7a9eb0", "ac_l": "#9ab8c8", "ac_d": "#5a8092",
             "bd": "#c0d0da",
             "p1": "#5a8092", "p2": "#7a9eb0",
+            "card": "#ffffff", "card_bd": "#dce3ea", "sh": "rgba(42,58,74,0.10)",
             "ok_b": "#d4edda", "ok_t": "#2d5a2d", "ok_d": "#8fd49a",
             "in_b": "#d6eaf5", "in_t": "#2a5570", "in_d": "#8ac0d8",
             "wa_b": "#fef3cd", "wa_t": "#6a5200", "wa_d": "#d4be60",
@@ -287,6 +682,7 @@ def get_theme_css(theme_name):
             "ac": "#c7958d", "ac_l": "#d4a8a0", "ac_d": "#a07570",
             "bd": "#ddd0cc",
             "p1": "#a07570", "p2": "#c7958d",
+            "card": "#ffffff", "card_bd": "#eee0dd", "sh": "rgba(74,53,64,0.10)",
             "ok_b": "#d4edda", "ok_t": "#2d5a2d", "ok_d": "#8fd49a",
             "in_b": "#d6eaf5", "in_t": "#2a5570", "in_d": "#8ac0d8",
             "wa_b": "#fef3cd", "wa_t": "#6a5200", "wa_d": "#d4be60",
@@ -302,11 +698,44 @@ def get_theme_css(theme_name):
             "ac": "#7fc5ca", "ac_l": "#9fe6dc", "ac_d": "#5a9ea5",
             "bd": "#c0d5d0",
             "p1": "#5a3839", "p2": "#764f51",
+            "card": "#ffffff", "card_bd": "#dcede8", "sh": "rgba(58,40,40,0.10)",
             "ok_b": "#d4edda", "ok_t": "#2d5a2d", "ok_d": "#8fd49a",
             "in_b": "#d6eaf5", "in_t": "#2a5570", "in_d": "#8ac0d8",
             "wa_b": "#fef3cd", "wa_t": "#6a5200", "wa_d": "#d4be60",
             "er_b": "#f8d7da", "er_t": "#6a2530", "er_d": "#d48090",
             "ex_d": "#c0d5d0", "tb_b": "#764f51", "tb_a": "#e6f4f0",
+        },
+        "🌙 深空暗夜": {
+            "bg1": "#0f1117", "bg2": "#131620", "bg3": "#0f1117",
+            "sb1": "#1a1d27", "sb2": "#131520",
+            "inp": "#1a1d27", "btn": "#2a2d3a", "btn_h": "#353846",
+            "tx_h": "#e4e4e7", "tx_m": "#c4c4c7", "tx_s": "#8b8b96",
+            "tx_p": "#6b6b76",
+            "ac": "#818cf8", "ac_l": "#a5b4fc", "ac_d": "#6366f1",
+            "bd": "#2a2d3a",
+            "p1": "#6366f1", "p2": "#818cf8",
+            "card": "#1e2130", "card_bd": "#2a2d3a", "sh": "rgba(0,0,0,0.35)",
+            "ok_b": "rgba(34,197,94,0.15)", "ok_t": "#86efac", "ok_d": "rgba(34,197,94,0.3)",
+            "in_b": "rgba(59,130,246,0.15)", "in_t": "#93c5fd", "in_d": "rgba(59,130,246,0.3)",
+            "wa_b": "rgba(251,191,36,0.15)", "wa_t": "#fcd34d", "wa_d": "rgba(251,191,36,0.3)",
+            "er_b": "rgba(239,68,68,0.15)", "er_t": "#fca5a5", "er_d": "rgba(239,68,68,0.3)",
+            "ex_d": "#2a2d3a", "tb_b": "#818cf8", "tb_a": "#1e2130",
+        },
+        "🎮 热血冒险": {
+            "bg1": "#fffef5", "bg2": "#fff8e7", "bg3": "#fffef0",
+            "sb1": "#fff5e0", "sb2": "#ffefd0",
+            "inp": "#ffffff", "btn": "#f0e6d0", "btn_h": "#e8dab8",
+            "tx_h": "#1a1a2e", "tx_m": "#2d2d44", "tx_s": "#6a6a8a",
+            "tx_p": "#a0a0b8",
+            "ac": "#ff6b35", "ac_l": "#ff8c42", "ac_d": "#e55320",
+            "bd": "#e5e0d0",
+            "p1": "#ff6b35", "p2": "#ff8c42",
+            "card": "#ffffff", "card_bd": "#f0e6d0", "sh": "rgba(255,107,53,0.12)",
+            "ok_b": "#d4edda", "ok_t": "#2d5a2d", "ok_d": "#8fd49a",
+            "in_b": "#d6eaf5", "in_t": "#2a5570", "in_d": "#8ac0d8",
+            "wa_b": "#fef3cd", "wa_t": "#6a5200", "wa_d": "#d4be60",
+            "er_b": "#f8d7da", "er_t": "#6a2530", "er_d": "#d48090",
+            "ex_d": "#e5e0d0", "tb_b": "#ff6b35", "tb_a": "#fff0e0",
         },
     }
     t = themes.get(theme_name, themes["🌌 莫兰迪蓝"])
@@ -341,6 +770,13 @@ h4, h5, h6 { color: [tx_s] !important; }
 [data-testid="stMetricDelta"] {
     color: [ac] !important;
 }
+[data-testid="stMetric"] {
+    background-color: [card];
+    border: 1px solid [card_bd];
+    border-radius: 10px;
+    padding: 12px 16px;
+    box-shadow: 0 2px 8px [sh];
+}
 .stProgress > div > div > div {
     background: linear-gradient(90deg, [ac], [ac_l]);
 }
@@ -368,21 +804,32 @@ h4, h5, h6 { color: [tx_s] !important; }
     color: [tx_m];
     border-color: [bd];
     background-color: [btn];
-    transition: all 0.2s;
+    transition: all 0.2s ease;
 }
 .stButton > button:hover {
     background-color: [btn_h];
     border-color: [ac];
     transform: translateY(-1px);
-    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    box-shadow: 0 4px 14px [sh];
+}
+.stButton > button:active {
+    transform: translateY(0);
 }
 .stButton > button[kind="primary"] {
     background: linear-gradient(135deg, [p1], [p2]);
-    border-color: [ac];
+    border-color: [ac_d];
     color: [tx_h];
+    font-weight: 600;
+    box-shadow: 0 3px 0 [ac_d];
 }
 .stButton > button[kind="primary"]:hover {
     background: linear-gradient(135deg, [p2], [ac_l]);
+    box-shadow: 0 4px 0 [ac_d];
+    transform: translateY(-1px);
+}
+.stButton > button[kind="primary"]:active {
+    box-shadow: 0 1px 0 [ac_d];
+    transform: translateY(2px);
 }
 .stTabs [data-baseweb="tab-list"] {
     gap: 4px;
@@ -397,7 +844,7 @@ h4, h5, h6 { color: [tx_s] !important; }
     background-color: [tb_a];
     border-bottom: 2px solid [tb_b];
 }
-.stAlert { border-radius: 8px; }
+.stAlert { border-radius: 8px; box-shadow: 0 2px 8px [sh]; }
 .stSuccess {
     background-color: [ok_b];
     color: [ok_t] !important;
@@ -423,13 +870,21 @@ h4, h5, h6 { color: [tx_s] !important; }
     background-color: transparent;
 }
 [data-testid="stExpander"] {
-    border-color: [ex_d];
+    border-color: [card_bd];
+    background-color: [card];
+    border-radius: 10px;
+    box-shadow: 0 2px 8px [sh];
 }
 .stDownloadButton > button {
     border-radius: 10px;
     color: [tx_m];
     background-color: [btn];
     border-color: [bd];
+    transition: all 0.2s ease;
+}
+.stDownloadButton > button:hover {
+    box-shadow: 0 4px 14px [sh];
+    transform: translateY(-1px);
 }
 [data-testid="stNumberInput"] input {
     background-color: [inp];
@@ -450,6 +905,7 @@ code {
         padding-right: 1rem !important;
         padding-top: 4.5rem !important;
     }
+}
 
 /* ═══════════════════════════════════
    移动端适配
@@ -465,6 +921,9 @@ code {
     }
     [data-testid="stMetricLabel"] {
         font-size: 0.85rem !important;
+    }
+    [data-testid="stMetric"] {
+        padding: 8px 10px;
     }
     /* Tab 标签字小一点，不换行 */
     .stTabs [data-baseweb="tab"] {
@@ -506,9 +965,9 @@ if not st.session_state.authed:
         st.markdown("<br><br><br>", unsafe_allow_html=True)
         st.markdown(
             """
-            <div style="text-align: center;">
-                <h1 style="font-size: 3rem;">🎮 Life-RPG</h1>
-                <p style="font-size: 1.1rem; color: #999;">个人经验值管理系统 · 云存档</p>
+            <div style="text-align: center; padding: 20px 0;">
+                <h1 style="font-size: 3rem; margin-bottom: 4px;">🎮 Life-RPG</h1>
+                <p style="font-size: 1.1rem; opacity: 0.6;">个人经验值管理系统 · 云存档</p>
             </div>
             """,
             unsafe_allow_html=True,
@@ -612,9 +1071,35 @@ st.markdown(
 
 data = st.session_state.data
 
+# 展示追溯解锁的成就通知（load_data 时存入 session_state）
+if st.session_state.get("retroactive_achievements"):
+    retro_achievements = st.session_state.pop("retroactive_achievements")
+    st.balloons()
+    total_bonus = sum(a["bonus"] for a in retro_achievements)
+    names = "、".join(a["name"] for a in retro_achievements)
+    st.success(
+        f"🏅 **追溯解锁 {len(retro_achievements)} 个成就！**\n\n"
+        f"{names}\n\n💰 追溯积分 +{total_bonus} pts 已到账！",
+        icon="🏅"
+    )
+
 # -------- 侧边栏 --------
 with st.sidebar:
     st.markdown("### 🎮 Life-RPG")
+
+    # 侧边栏总等级简要显示
+    _sb_total = data.get("total_earned", 0)
+    _sb_lv = _sb_total // 100
+    st.markdown(
+        f'<div style="display: flex; justify-content: space-between; align-items: center; '
+        f'padding: 8px 12px; border-radius: 8px; margin-bottom: 4px;'
+        f'background: rgba(96,165,250,0.08); border: 1px solid rgba(96,165,250,0.2);">'
+        f'<span style="font-size: 0.8rem; opacity: 0.6;">总等级</span>'
+        f'<span style="font-size: 1.3rem; font-weight: 800;">Lv.{_sb_lv}</span>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
     st.markdown("---")
     st.markdown("**存档状态**")
     if API_KEY and BIN_ID:
@@ -624,12 +1109,13 @@ with st.sidebar:
             with st.spinner("同步中..."):
                 cloud_data = cloud_load()
                 if cloud_data:
+                    cloud_data = _migrate_data(cloud_data)
                     st.session_state.data = cloud_data
                     data = cloud_data
                     st.success("✅ 已拉取云端最新数据")
                     st.rerun()
                 else:
-                    st.success("⚠️ 同步失败")
+                    st.error("⚠️ 同步失败，请检查网络后重试")
     else:
         st.warning("💾 仅本地存档")
         st.caption("配置 JSONBin 后可手机同步")
@@ -637,12 +1123,13 @@ with st.sidebar:
 # --- 主题切换 ---
     st.markdown("---")
     st.markdown("**🎨 配色主题**")
-    theme_options = ["🌌 莫兰迪蓝", "🌸 莫兰迪粉", "🍫 薄荷巧克力"]
+    theme_options = ["🌌 莫兰迪蓝", "🌸 莫兰迪粉", "🍫 薄荷巧克力", "🌙 深空暗夜", "🎮 热血冒险"]
     current_theme = st.session_state.get("theme", "🌌 莫兰迪蓝")
+    theme_idx = theme_options.index(current_theme) if current_theme in theme_options else 0
     st.selectbox(
         "选择配色",
         theme_options,
-        index=theme_options.index(current_theme),
+        index=theme_idx,
         key="theme_select",
         on_change=on_theme_change,
         label_visibility="collapsed",
@@ -667,8 +1154,8 @@ total = data.get("total_earned", 0) - total_spent
 st.markdown("---")
 
 # -------- 功能标签页 --------
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
-    ["📝 记录任务", "🚧 阻力复盘", "🏆 奖励商店", "📋 历史日志", "📊 统计", "⚙️ 设置"]
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(
+    ["📝 记录任务", "🚧 阻力复盘", "🏆 奖励商店", "📋 历史日志", "📊 统计", "🏅 成就", "⚙️ 设置"]
 )
 
 
@@ -682,6 +1169,9 @@ with tab1:
     st.caption("低能量时，点一下也算数。不想写也可以，这就是一次微小启动。")
 
     quick_actions = data.get("quick_actions", [])
+
+    # 心情选择器（全局，适用于下方所有快捷按钮）
+    quick_mood = st.selectbox("当前心情", MOOD_OPTIONS, index=0, key="quick_mood", label_visibility="collapsed")
 
     attr_icon_map = {
         "Productivity": "⚡",
@@ -700,7 +1190,12 @@ with tab1:
                 idx = row_start + j
                 name = action.get("name", "未命名动作")
                 attr_key = action.get("attribute", "Productivity")
-                points = int(action.get("points", 1))
+                if attr_key not in VALID_ATTRS:
+                    attr_key = "Productivity"
+                try:
+                    points = max(int(action.get("points", 1)), 1)
+                except (ValueError, TypeError):
+                    points = 1
                 icon = attr_icon_map.get(attr_key, "✨")
 
                 with cols[j]:
@@ -717,11 +1212,16 @@ with tab1:
                                 "task": "快捷记录：" + name,
                                 "attribute": attr_key,
                                 "points": points,
+                                "source": "任务",
+                                "mood": quick_mood,
                             }
                         )
 
+                        newly = check_achievements(data)
                         save_data(data)
                         st.session_state.data = data
+
+                        show_achievement_notifications(newly)
 
                         new_val = data["stats"][attr_key]
                         msg = encouragement_for(attr_key)
@@ -730,8 +1230,9 @@ with tab1:
                             icon="🐾"
                         )
 
-                        if points >= 10:
+                        if points >= 10 and not newly:
                             st.balloons()
+                        st.rerun()
 
     st.markdown("---")
 
@@ -764,11 +1265,20 @@ with tab1:
             key="task_desc",
         )
 
-        task_date = st.date_input(
-            "📅 这是哪天做的？",
-            value=(datetime.utcnow() + timedelta(hours=TIMEZONE_OFFSET)).date(),
-            key="task_date",
-        )
+        c3a, c3b = st.columns(2)
+        with c3a:
+            task_mood = st.selectbox(
+                "当时心情",
+                MOOD_OPTIONS,
+                index=0,
+                key="task_mood",
+            )
+        with c3b:
+            task_date = st.date_input(
+                "📅 这是哪天做的？",
+                value=now_local().date(),
+                key="task_date",
+            )
         st.caption("默认是今天。如果是补记之前的事，可以改日期。")
 
         if st.button("✅ 提交详细记录", use_container_width=True, type="primary"):
@@ -788,8 +1298,9 @@ with tab1:
             points = diff_map[diff_choice]
 
             # 确定记录时间：补记日期用当天12:00，今天用当前时间
-            today_local = (datetime.utcnow() + timedelta(hours=TIMEZONE_OFFSET)).date()
-            if task_date == today_local:
+            today_local = now_local().date()
+            is_backdated = task_date != today_local
+            if not is_backdated:
                 task_time = now_str()
             else:
                 task_time = task_date.strftime("%Y-%m-%d") + " 12:00"
@@ -802,10 +1313,17 @@ with tab1:
                     "task": task_desc or "(未填写)",
                     "attribute": attr_key,
                     "points": points,
+                    "source": "任务",
+                    "backdated": is_backdated,
+                    "mood": task_mood,
                 }
             )
+
+            newly = check_achievements(data)
             save_data(data)
             st.session_state.data = data
+
+            show_achievement_notifications(newly)
 
             new_val = data["stats"][attr_key]
             msg = encouragement_for(attr_key)
@@ -814,8 +1332,11 @@ with tab1:
                 icon="✅"
             )
 
-            if points >= 20:
+            if points >= 20 and not newly:
                 st.balloons()
+            if "task_date" in st.session_state:
+                del st.session_state["task_date"]
+            st.rerun()
 
 
 # ════════ Tab 2：阻力复盘 ════════
@@ -859,18 +1380,25 @@ with tab2:
                 "strategy": strategy or "(未填写)",
             }
         )
+        newly = check_achievements(data)
         save_data(data)
         st.session_state.data = data
 
+        show_achievement_notifications(newly)
+
         count = len(data["resistance_log"])
         st.success(f"🔥 +1 Willpower | 直面阻力 {count} 次", icon="💪")
+        st.rerun()
         
 # ════════ Tab 3：奖励商店 ════════
 with tab3:
+    _total_spent = sum(r.get("cost", 0) for r in data.get("redemption_log", []))
+    _total = data.get("total_earned", 0) - _total_spent
+
     st.markdown("### 🏆 奖励商店")
     st.markdown(
         "💰 **当前积分: "
-        + str(total)
+        + str(_total)
         + "** — 同一个奖励可以反复兑换，每次都会扣积分"
     )
     st.markdown("---")
@@ -878,27 +1406,28 @@ with tab3:
     rewards = data.get("rewards", [])
     redemption_log = data.get("redemption_log", [])
 
-    # 统计每个奖励的兑换次数
-    def count_redeemed(name):
-        return sum(1 for r in redemption_log if r.get("reward_name") == name)
+    redeem_counts = {}
+    for r in redemption_log:
+        name = r.get("reward_name", "")
+        redeem_counts[name] = redeem_counts.get(name, 0) + 1
 
     if not rewards:
         st.warning("商店空空如也 → 去「设置」添加奖励")
     else:
         for i, reward in enumerate(rewards):
-            cost = reward["cost"]
-            can_buy = total >= cost
-            times = count_redeemed(reward["name"])
+            cost = max(reward.get("cost", 1), 1)
+            can_buy = _total >= cost
+            times = redeem_counts.get(reward.get("name", ""), 0)
 
             col_info, col_btn = st.columns([3, 1])
 
             with col_info:
-                st.markdown("🎁 **" + reward["name"] + "**")
+                st.markdown("🎁 **" + reward.get("name", "未命名") + "**")
 
                 if can_buy:
                     cost_text = "✅ " + str(cost) + " pts"
                 else:
-                    cost_text = "❌ " + str(cost) + " pts（差 " + str(cost - total) + "）"
+                    cost_text = "❌ " + str(cost) + " pts（差 " + str(cost - _total) + "）"
 
                 if times > 0:
                     times_text = "已兑 " + str(times) + " 次"
@@ -910,22 +1439,23 @@ with tab3:
             with col_btn:
                 if can_buy:
                     if st.button("兑换", key="r_" + str(i), type="primary", use_container_width=True):
-                        # ✅ 不再扣属性！只记录兑换历史
                         data["redemption_log"].append(
                             {
                                 "time": now_str(),
-                                "reward_name": reward["name"],
+                                "reward_name": reward.get("name", "未命名"),
                                 "cost": cost,
                             }
                         )
+                        newly = check_achievements(data)
                         save_data(data)
                         st.session_state.data = data
                         st.success(
                             "🎉🎉🎉 **兑换成功！** "
-                            + reward["name"]
+                            + reward.get("name", "未命名")
                             + " — 好好享受！"
                         )
-                        st.balloons()
+                        show_achievement_notifications(newly)
+                        st.rerun()
                 else:
                     st.button("积分不够", disabled=True, key="r_" + str(i), use_container_width=True)
 
@@ -980,13 +1510,17 @@ with tab4:
             else:
                 show_count_action = len(action_logs)
             st.markdown("---")
-            for entry in reversed(action_logs[-show_count_action:]):             
-                attr_emoji = {
-                    "Productivity": "⚡",
-                    "Creativity": "💡",
-                    "Willpower": "🔥",
-                    "Vitality": "💚",
-                }.get(entry.get("attribute", ""), "•")
+            for entry in reversed(action_logs[-show_count_action:]):
+                source = entry.get("source", "任务")
+                if source == "成就":
+                    attr_emoji = "🏅"
+                else:
+                    attr_emoji = {
+                        "Productivity": "⚡",
+                        "Creativity": "💡",
+                        "Willpower": "🔥",
+                        "Vitality": "💚",
+                    }.get(entry.get("attribute", ""), "•")
                 header = (
                     attr_emoji
                     + " +"
@@ -998,7 +1532,9 @@ with tab4:
                     + ")"
                 )
                 with st.expander(header):
-                    st.markdown("**属性**: " + str(entry.get("attribute", "?")))
+                    st.markdown("**来源**: " + source)
+                    if entry.get("attribute"):
+                        st.markdown("**属性**: " + str(entry.get("attribute")))
                     st.markdown("**得分**: +" + str(entry.get("points", "?")))
 
     # --- 阻力记录 ---
@@ -1062,30 +1598,153 @@ with tab4:
 with tab5:
     st.markdown("### 📊 统计")
 
+    # ---- 周报 / 月报 ----
+    with st.expander("📋 周报 / 月报", expanded=False):
+        today_for_report = now_local().date()
+        monday = today_for_report - timedelta(days=today_for_report.weekday())
+        week_key = f"{monday.year}-W{monday.strftime('%W')}"
+
+        reports = data.get("reports", [])
+
+        # session_state 幂等标记：防止同一次 rerun 中重复触发自动生成
+        auto_gen_key = f"report_auto_gen_{week_key}"
+        if auto_gen_key not in st.session_state:
+            st.session_state[auto_gen_key] = False
+
+        # 自动补生成：上周周报还没生成 + 上周有数据 → 补一份
+        last_week_monday = monday - timedelta(days=7)
+        last_week_key = f"{last_week_monday.year}-W{last_week_monday.strftime('%W')}"
+        has_last_weekly = any(r.get("type") == "weekly" and r.get("period_key") == last_week_key for r in reports)
+        if not has_last_weekly:
+            try:
+                last_week_data = _get_daily_map(data)
+                last_week_strs = [(last_week_monday + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
+                has_last_week_data = any(ds in last_week_data for ds in last_week_strs)
+                if has_last_week_data:
+                    last_week_sunday = monday - timedelta(days=1)
+                    report_text = generate_weekly_report(data, as_of_date=last_week_sunday)
+                    reports.append({
+                        "type": "weekly",
+                        "period_key": last_week_key,
+                        "generated_time": now_str(),
+                        "content": report_text,
+                        "auto": True,
+                    })
+                    data["reports"] = reports
+                    save_data(data)
+                    st.session_state.data = data
+            except Exception as e:
+                st.warning(f"上周周报自动补生成失败：{e}", icon="⚠️")
+
+        # 本周周报自动生成（周日当天）
+        is_sunday = today_for_report.weekday() == 6
+        existing_weekly = [r for r in reports if r.get("type") == "weekly" and r.get("period_key") == week_key]
+        if is_sunday and not existing_weekly and not st.session_state[auto_gen_key]:
+            try:
+                report_text = generate_weekly_report(data)
+                reports.append({
+                    "type": "weekly",
+                    "period_key": week_key,
+                    "generated_time": now_str(),
+                    "content": report_text,
+                    "auto": True,
+                })
+                data["reports"] = reports
+                save_data(data)
+                st.session_state.data = data
+                st.session_state[auto_gen_key] = True
+                existing_weekly = [reports[-1]]
+            except Exception as e:
+                st.warning(f"本周周报自动生成失败：{e}", icon="⚠️")
+
+        # 清理：reports 最多保留 50 份，按时间倒序截断
+        if len(reports) > 50:
+            reports = sorted(reports, key=lambda r: r.get("generated_time", ""), reverse=True)[:50]
+            data["reports"] = reports
+            save_data(data)
+            st.session_state.data = data
+
+        rc1, rc2 = st.columns(2)
+        with rc1:
+            if st.button("📋 生成本周周报", use_container_width=True):
+                existing = [r for r in reports if r.get("type") == "weekly" and r.get("period_key") == week_key]
+                if existing:
+                    old = existing[0]
+                    old["content"] = generate_weekly_report(data)
+                    old["generated_time"] = now_str()
+                    old["auto"] = False
+                    data["reports"] = reports
+                    save_data(data)
+                    st.session_state.data = data
+                    st.success("✅ 本周周报已更新")
+                    st.rerun()
+                else:
+                    report_text = generate_weekly_report(data)
+                    reports.append({
+                        "type": "weekly",
+                        "period_key": week_key,
+                        "generated_time": now_str(),
+                        "content": report_text,
+                        "auto": False,
+                    })
+                    data["reports"] = reports
+                    save_data(data)
+                    st.session_state.data = data
+                    st.success("✅ 周报已生成")
+                    st.rerun()
+        with rc2:
+            if st.button("📅 生成本月月报", use_container_width=True):
+                month_key = today_for_report.strftime("%Y-%m")
+                existing_monthly = [r for r in reports if r.get("type") == "monthly" and r.get("period_key") == month_key]
+                if existing_monthly:
+                    old = existing_monthly[0]
+                    old["content"] = generate_monthly_report(data)
+                    old["generated_time"] = now_str()
+                    old["auto"] = False
+                    data["reports"] = reports
+                    save_data(data)
+                    st.session_state.data = data
+                    st.success("✅ 本月月报已更新")
+                    st.rerun()
+                else:
+                    report_text = generate_monthly_report(data)
+                    reports.append({
+                        "type": "monthly",
+                        "period_key": month_key,
+                        "generated_time": now_str(),
+                        "content": report_text,
+                        "auto": False,
+                    })
+                    data["reports"] = reports
+                    save_data(data)
+                    st.session_state.data = data
+                    st.success("✅ 月报已生成")
+                    st.rerun()
+
+        # 显示最近报告
+        recent_reports = sorted(reports, key=lambda r: r.get("generated_time", ""), reverse=True)
+        if recent_reports:
+            latest = recent_reports[0]
+            st.markdown("---")
+            auto_tag = " 🤖自动生成" if latest.get("auto") else ""
+            st.caption(f"最近报告 · 生成于 {latest.get('generated_time', '')}{auto_tag}")
+            st.code(latest.get("content", ""), language=None)
+
+            if len(recent_reports) > 1:
+                with st.expander(f"查看全部历史报告（共 {len(recent_reports)} 份）"):
+                    for r in recent_reports[1:]:
+                        tag = " 🤖" if r.get("auto") else ""
+                        st.caption(f"{r.get('type', '')} · {r.get('generated_time', '')}{tag}")
+                        st.code(r.get("content", ""), language=None)
+                        st.markdown("")
+        else:
+            st.info("还没有报告。点击上方按钮生成一份。")
+    st.markdown("---")
+
     # ---------- 汇总每日数据 ----------
-    daily = {}
-    for entry in data.get("action_log", []):
-        ds = entry.get("time", "")[:10]
-        if not ds:
-            continue
-        pts = entry.get("points", 0)
-        attr = entry.get("attribute", "")
-        if ds not in daily:
-            daily[ds] = {"Productivity": 0, "Creativity": 0, "Willpower": 0, "Vitality": 0, "total": 0}
-        if attr in daily[ds]:
-            daily[ds][attr] += pts
-        daily[ds]["total"] += pts
+    daily = _get_daily_map(data)
 
-    for entry in data.get("resistance_log", []):
-        ds = entry.get("time", "")[:10]
-        if not ds:
-            continue
-        if ds not in daily:
-            daily[ds] = {"Productivity": 0, "Creativity": 0, "Willpower": 0, "Vitality": 0, "total": 0}
-        daily[ds]["Willpower"] += 1
-        daily[ds]["total"] += 1
-
-    today_date = (datetime.utcnow() + timedelta(hours=TIMEZONE_OFFSET)).date()
+    today_date = now_local().date()
 
     # ---- 数据摘要 ----
     st.markdown("#### 📈 总览")
@@ -1094,9 +1753,12 @@ with tab5:
     total_points = data.get("total_earned", 0)
     avg_daily = round(total_points / max(total_days, 1), 1)
 
-    # 连续记录天数
+    # 连续记录天数（今天没记录则从昨天开始算，不直接归零）
     streak = 0
     check_date = today_date
+    today_ds = today_date.strftime("%Y-%m-%d")
+    if today_ds not in daily:
+        check_date = today_date - timedelta(days=1)
     while True:
         ds = check_date.strftime("%Y-%m-%d")
         if ds in daily:
@@ -1262,9 +1924,95 @@ with tab5:
     )
     st.plotly_chart(fig_heat, use_container_width=True)
 
+    st.markdown("---")
 
-# ════════ Tab 6：设置 ════════
-with tab6:
+    # ---- 心情 vs 积分 ----
+    st.markdown("#### 😊 心情与产出")
+
+    mood_data = {}
+    for entry in data.get("action_log", []):
+        source = entry.get("source", "任务")
+        if source == "成就":
+            continue
+        mood = entry.get("mood", "🙂")
+        if mood not in VALID_MOODS:
+            mood = "🙂"
+        pts = entry.get("points", 0)
+        if mood not in mood_data:
+            mood_data[mood] = {"total_pts": 0, "count": 0}
+        mood_data[mood]["total_pts"] += pts
+        mood_data[mood]["count"] += 1
+
+    if mood_data and sum(v["count"] for v in mood_data.values()) > 0:
+        mood_display_order = list(reversed(MOOD_OPTIONS))
+        mood_labels = [m for m in mood_display_order if m in mood_data]
+        mood_labels += [m for m in mood_data if m not in mood_display_order]
+
+        avg_pts = [round(mood_data[m]["total_pts"] / max(mood_data[m]["count"], 1), 1) for m in mood_labels]
+        counts = [mood_data[m]["count"] for m in mood_labels]
+
+        mc1, mc2 = st.columns(2)
+        with mc1:
+            st.caption("各心情平均得分")
+            fig_mood_bar = go.Figure(data=[go.Bar(
+                x=mood_labels,
+                y=avg_pts,
+                marker_color=["#7fc5ca", "#51cf66", "#ffe066", "#ffa94d", "#ff5c5c"][:len(mood_labels)],
+                text=[f"{v} pts" for v in avg_pts],
+                textposition="outside",
+            )])
+            fig_mood_bar.update_layout(
+                height=250,
+                margin=dict(t=10, b=30, l=30, r=10),
+                xaxis_title=None,
+                yaxis_title="平均得分",
+                showlegend=False,
+            )
+            st.plotly_chart(fig_mood_bar, use_container_width=True)
+
+        with mc2:
+            st.caption("各心情记录次数")
+            fig_mood_pie = go.Figure(data=[go.Pie(
+                labels=mood_labels,
+                values=counts,
+                hole=0.5,
+                textinfo="label+percent",
+                textposition="outside",
+            )])
+            fig_mood_pie.update_layout(
+                height=250,
+                margin=dict(t=10, b=10, l=10, r=10),
+                showlegend=False,
+            )
+            st.plotly_chart(fig_mood_pie, use_container_width=True)
+
+        # 文字洞察
+        best_mood = max(mood_labels, key=lambda m: mood_data[m]["total_pts"] / max(mood_data[m]["count"], 1))
+        best_avg = round(mood_data[best_mood]["total_pts"] / max(mood_data[best_mood]["count"], 1), 1)
+        worst_mood = min(mood_labels, key=lambda m: mood_data[m]["total_pts"] / max(mood_data[m]["count"], 1))
+        worst_avg = round(mood_data[worst_mood]["total_pts"] / max(mood_data[worst_mood]["count"], 1), 1)
+
+        if len(mood_labels) == 1:
+            st.info(
+                f"💡 目前只有 {best_mood} 一种心情的记录（平均 {best_avg} pts/次）。"
+                f"多记录几种心情后，这里会显示不同状态下的产出对比。"
+            )
+        elif best_mood == worst_mood:
+            st.info(
+                f"💡 各心情下的平均产出相同（{best_avg} pts/次），"
+                f"说明心情对产出暂无显著影响。继续记录更多数据后再看趋势。"
+            )
+        else:
+            st.info(
+                f"💡 你在 {best_mood} 状态下产出最高（平均 {best_avg} pts/次），"
+                f"在 {worst_mood} 状态下产出最低（平均 {worst_avg} pts/次）。"
+            )
+    else:
+        st.info("还没有心情数据。记录任务时选择心情后，这里会显示分析。")
+
+
+# ════════ Tab 7：设置 ════════
+with tab7:
     st.markdown("### ⚙️ 设置")
 
     # -- 快捷按钮设置 --
@@ -1326,24 +2074,15 @@ with tab6:
     quick_actions = data.get("quick_actions", [])
 
     if quick_actions:
-        quick_names = [
-            q.get("name", "未命名动作")
-            + " | "
-            + q.get("attribute", "Productivity")
-            + " +"
-            + str(q.get("points", 1))
-            for q in quick_actions
-        ]
-
-        del_q_choice = st.selectbox(
+        del_q_idx = st.selectbox(
             "选择要删除的快捷按钮",
-            quick_names,
+            range(len(quick_actions)),
+            format_func=lambda i: f"{quick_actions[i].get('name', '未命名')} | {quick_actions[i].get('attribute', 'Productivity')} +{quick_actions[i].get('points', 1)}",
             key="del_quick_action",
         )
 
         if st.button("🗑️ 删除选中快捷按钮"):
-            idx = quick_names.index(del_q_choice)
-            removed = data["quick_actions"].pop(idx)
+            removed = data["quick_actions"].pop(del_q_idx)
             save_data(data)
             st.session_state.data = data
             st.success("✅ 已删除快捷按钮: " + removed.get("name", "未命名动作"))
@@ -1378,13 +2117,14 @@ with tab6:
     st.markdown("---")
     st.markdown("#### 🗑️ 删除奖励")
     if data["rewards"]:
-        reward_names = [
-            r["name"] + " (" + str(r["cost"]) + " pts)" for r in data["rewards"]
-        ]
-        del_choice = st.selectbox("选择要删除的奖励", reward_names, key="del_reward")
+        del_r_idx = st.selectbox(
+            "选择要删除的奖励",
+            range(len(data["rewards"])),
+            format_func=lambda i: f"{data['rewards'][i]['name']} ({data['rewards'][i]['cost']} pts)",
+            key="del_reward",
+        )
         if st.button("🗑️ 删除选中奖励"):
-            idx = reward_names.index(del_choice)
-            data["rewards"].pop(idx)
+            data["rewards"].pop(del_r_idx)
             save_data(data)
             st.session_state.data = data
             st.success("✅ 已删除")
@@ -1398,26 +2138,31 @@ with tab6:
     col_r1, col_r2, col_r3 = st.columns(3)
 
     with col_r1:
-        if st.button("🔄 重置属性为0", type="secondary"):
+        confirm_reset = st.checkbox("确认重置", key="confirm_reset_stats")
+        if st.button("🔄 重置属性为0", type="secondary", disabled=not confirm_reset):
             for key in data["stats"]:
                 data["stats"][key] = 0
             data["total_earned"] = 0
             save_data(data)
             st.session_state.data = data
+            st.session_state["confirm_reset_stats"] = False
             st.success("✅ 属性已清零")
             st.rerun()
 
     with col_r2:
-        if st.button("💣 清除所有数据", type="secondary"):
+        confirm_clear = st.checkbox("确认清除", key="confirm_clear_data")
+        if st.button("💣 清除所有数据", type="secondary", disabled=not confirm_clear):
             data = new_data()
             save_data(data)
             st.session_state.data = data
+            st.session_state["confirm_clear_data"] = False
             st.success("✅ 已恢复初始状态")
             st.rerun()
 
     with col_r3:
         if st.button("🩹 修复属性(找回错扣分)", type="primary"):
             data = rebuild_stats_from_logs(data)
+            newly = check_achievements(data)
             save_data(data)
             st.session_state.data = data
             s = data["stats"]
@@ -1426,6 +2171,7 @@ with tab6:
                 f"⚡{s['Productivity']} 💡{s['Creativity']} "
                 f"🔥{s['Willpower']} 💚{s['Vitality']}"
             )
+            show_achievement_notifications(newly)
             st.rerun()
 
 
@@ -1440,7 +2186,71 @@ with tab6:
         use_container_width=True,
     )
 
-    
+
+# ════════ Tab 6：成就 ════════
+with tab6:
+    st.markdown("### 🏅 成就")
+
+    achievements = data.get("achievements", [])
+    unlocked = [a for a in achievements if a.get("unlocked")]
+    total_bonus = sum(a.get("bonus", 0) for a in unlocked)
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.metric("🏅 已解锁", f"{len(unlocked)} / {len(achievements)}")
+    with c2:
+        st.metric("💰 成就积分", str(total_bonus))
+    with c3:
+        st.metric("📊 完成度", f"{int(len(unlocked) / max(len(achievements), 1) * 100)}%")
+
+    st.progress(len(unlocked) / max(len(achievements), 1))
+    st.markdown("---")
+
+    cat_labels = {"cumulative": "📈 累积型成就", "daily": "📅 单日型成就", "special": "🎯 特殊行为型成就"}
+    cat_colors = {"cumulative": "#58CC02", "daily": "#1CB0F6", "special": "#CE82FF"}
+
+    for cat in ["cumulative", "daily", "special"]:
+        cat_achs = [a for a in achievements if a.get("category") == cat]
+        if not cat_achs:
+            continue
+        st.markdown(f"#### {cat_labels.get(cat, cat)}")
+
+        badges_html = '<div style="display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px;">'
+        for ach in cat_achs:
+            parts = ach["name"].split(" ", 1)
+            emoji = parts[0] if len(parts) > 1 else "🏅"
+            name = parts[1] if len(parts) > 1 else ach["name"]
+            color = cat_colors.get(cat, "#888")
+
+            if ach.get("unlocked"):
+                badges_html += (
+                    f'<div title="{ach["desc"]}" '
+                    f'style="flex: 1 1 120px; min-width: 110px; '
+                    f'background: linear-gradient(135deg, {color}22, {color}08); '
+                    f'border: 1.5px solid {color}55; border-radius: 10px; '
+                    f'padding: 10px 6px; text-align: center; transition: transform 0.15s;">'
+                    f'<div style="font-size: 1.8rem; margin-bottom: 2px;">{emoji}</div>'
+                    f'<div style="font-weight: 700; font-size: 0.82rem; line-height: 1.3;">{name}</div>'
+                    f'<div style="font-size: 0.72rem; color: {color}; font-weight: 600;">+{ach["bonus"]} pts</div>'
+                    f'</div>'
+                )
+            else:
+                badges_html += (
+                    f'<div title="{ach["desc"]}" '
+                    f'style="flex: 1 1 120px; min-width: 110px; '
+                    f'background: rgba(128,128,128,0.06); '
+                    f'border: 1.5px solid rgba(128,128,128,0.15); border-radius: 10px; '
+                    f'padding: 10px 6px; text-align: center; opacity: 0.45; filter: grayscale(0.7);">'
+                    f'<div style="font-size: 1.8rem; margin-bottom: 2px;">🔒</div>'
+                    f'<div style="font-weight: 700; font-size: 0.82rem; line-height: 1.3; color: #888;">{name}</div>'
+                    f'<div style="font-size: 0.72rem; color: #aaa;">+{ach["bonus"]} pts</div>'
+                    f'</div>'
+                )
+        badges_html += '</div>'
+        st.markdown(badges_html, unsafe_allow_html=True)
+
+        st.markdown("")
+
 
 # ════════════════════════════════════════════════════════
 #  ⚔️ 属性面板（回填到页面顶部占位，读取最新 data → 即时刷新）
@@ -1450,6 +2260,26 @@ with stats_placeholder:
     _spent = sum(r.get("cost", 0) for r in data.get("redemption_log", []))
     _total = data.get("total_earned", 0) - _spent
 
+    # ---- 总等级 ----
+    _total_earned = data.get("total_earned", 0)
+    _total_lv = _total_earned // 100
+    _lv_progress = (_total_earned % 100) / 100
+    _lv_remaining = 100 - (_total_earned % 100)
+
+    _lv_c1, _lv_c2 = st.columns([1, 3])
+    with _lv_c1:
+        st.markdown(
+            f'<div style="text-align: center; padding: 6px 0;">'
+            f'<div style="font-size: 2.4rem; font-weight: 800; line-height: 1.2;">Lv.{_total_lv}</div>'
+            f'<div style="font-size: 0.8rem; opacity: 0.6;">总等级</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+    with _lv_c2:
+        st.progress(_lv_progress)
+        st.caption(f"距 Lv.{_total_lv + 1} 还需 {_lv_remaining} pts · 累计 {_total_earned} pts")
+
+    st.markdown("---")
     st.markdown("## ⚔️ 属性面板")
 
     _attr_display = [
