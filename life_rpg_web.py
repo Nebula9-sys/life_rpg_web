@@ -159,6 +159,38 @@ ACHIEVEMENT_DEFS = [
     {"id": "streak_30",        "name": "💎 月度连击",  "desc": "连续记录 30 天",       "category": "special",    "bonus": 60},
     {"id": "stat_100",         "name": "⭐ 百分属性",  "desc": "任一属性突破 100",     "category": "special",    "bonus": 25},
     {"id": "stat_500",         "name": "🌟 属性大师",  "desc": "任一属性突破 500",     "category": "special",    "bonus": 50},
+    # —— 心情系列 ——
+    {"id": "mood_10",           "name": "📝 心情记录员",  "desc": "记录 10 次心情",       "category": "mood",      "bonus": 15},
+    {"id": "mood_50",           "name": "🎭 心情达人",    "desc": "记录 50 次心情",       "category": "mood",      "bonus": 30},
+    {"id": "mood_streak_7",     "name": "📅 心情连续",    "desc": "连续 7 天记录心情",     "category": "mood",      "bonus": 20},
+    # —— 全属性里程碑 ——
+    {"id": "all_attr_lv10",     "name": "🎯 全属性Lv10",  "desc": "四项属性均达 Lv10",     "category": "milestone", "bonus": 50},
+    {"id": "all_attr_lv15",     "name": "🎯 全属性Lv15",  "desc": "四项属性均达 Lv15",     "category": "milestone", "bonus": 80},
+    {"id": "all_attr_lv20",     "name": "🎯 全属性Lv20",  "desc": "四项属性均达 Lv20",     "category": "milestone", "bonus": 120},
+    {"id": "all_attr_lv30",     "name": "🎯 全属性Lv30",  "desc": "四项属性均达 Lv30",     "category": "milestone", "bonus": 200},
+    {"id": "all_attr_lv40",     "name": "🎯 全属性Lv40",  "desc": "四项属性均达 Lv40",     "category": "milestone", "bonus": 400},
+    # —— 活跃里程碑 ——
+    {"id": "active_50",         "name": "📆 活跃50天",    "desc": "累计活跃 50 天",       "category": "cumulative","bonus": 30},
+    {"id": "active_150",        "name": "📆 活跃150天",   "desc": "累计活跃 150 天",      "category": "cumulative","bonus": 60},
+    {"id": "active_299",        "name": "📆 活跃299天",   "desc": "累计活跃 299 天",      "category": "cumulative","bonus": 80},
+    {"id": "active_365",        "name": "🗓️ 活跃365天",   "desc": "累计活跃 365 天",      "category": "cumulative","bonus": 100},
+    # —— 阻力复盘进阶 ——
+    {"id": "resistance_50",     "name": "🛡️ 阻力五十",   "desc": "阻力复盘满 50 次",     "category": "cumulative","bonus": 25},
+    {"id": "resistance_100",    "name": "🛡️ 阻力百条",   "desc": "阻力复盘满 100 次",    "category": "cumulative","bonus": 40},
+    {"id": "resistance_streak_7","name": "📋 连续阻力7天","desc": "连续 7 天做阻力复盘",   "category": "daily",     "bonus": 20},
+    # —— 积分里程碑 ——
+    {"id": "two_thousand_pts",  "name": "💰 两千分",      "desc": "总积分突破 2000",      "category": "cumulative","bonus": 30},
+    {"id": "ten_thousand_pts",  "name": "🏦 万分大佬",    "desc": "总积分突破 10000",     "category": "cumulative","bonus": 150},
+    # —— 兑换消耗 ——
+    {"id": "consumed_500",      "name": "🛒 消耗500分",   "desc": "兑换累计消耗 500",     "category": "cumulative","bonus": 25},
+    {"id": "consumed_1000",     "name": "🛒 消耗1000分",  "desc": "兑换累计消耗 1000",    "category": "cumulative","bonus": 40},
+    {"id": "consumed_2000",     "name": "🛒 消耗2000分",  "desc": "兑换累计消耗 2000",    "category": "cumulative","bonus": 60},
+    {"id": "consumed_5000",     "name": "🛒 消耗5000分",  "desc": "兑换累计消耗 5000",    "category": "cumulative","bonus": 100},
+    # —— 其他 ——
+    {"id": "weekly_report_4",   "name": "📊 周报连续4周","desc": "连续 4 周生成周报",     "category": "special",   "bonus": 20},
+    {"id": "weekly_200",        "name": "⚡ 单周200分",   "desc": "一周内总得分超 200",    "category": "daily",     "bonus": 25},
+    {"id": "monthly_20",        "name": "🌙 月度20天",    "desc": "单月活跃超 20 天",     "category": "daily",     "bonus": 30},
+    {"id": "comeback_3day",     "name": "🔄 东山再起",    "desc": "断签 3 天后重新记录",   "category": "special",   "bonus": 10},
 ]
 
 
@@ -199,7 +231,96 @@ def check_achievements(data, retroactive=False):
 
     stat_vals = [v for v in data.get("stats", {}).values() if isinstance(v, (int, float))]
     max_stat = max(stat_vals) if stat_vals else 0
+    min_stat = min(stat_vals) if stat_vals else 0
     has_backdated = any(e.get("backdated", False) for e in action_log)
+
+    # —— 新成就变量 ——
+    # 心情统计
+    mood_entries = [e for e in action_log if e.get("mood")]
+    mood_count = len(mood_entries)
+    mood_dates = set(e.get("time", "")[:10] for e in mood_entries if e.get("time"))
+    mood_streak = 0
+    _md = today_date
+    if today_str not in mood_dates:
+        _md = today_date - timedelta(days=1)
+    while True:
+        _ds = _md.strftime("%Y-%m-%d")
+        if _ds in mood_dates:
+            mood_streak += 1
+            _md -= timedelta(days=1)
+        else:
+            break
+
+    # 阻力复盘连续天数
+    resist_dates = set(r.get("time", "")[:10] for r in resistance_log if r.get("time"))
+    resistance_streak = 0
+    _rd = today_date
+    if today_str not in resist_dates:
+        _rd = today_date - timedelta(days=1)
+    while True:
+        _ds = _rd.strftime("%Y-%m-%d")
+        if _ds in resist_dates:
+            resistance_streak += 1
+            _rd -= timedelta(days=1)
+        else:
+            break
+
+    # 兑换总消耗
+    total_consumed = sum(r.get("cost", 0) for r in redemption_log)
+
+    # 周报连续周数
+    reports = data.get("reports", [])
+    week_mondays = []
+    for r in reports:
+        if r.get("type") == "weekly" and r.get("period_key"):
+            pk = r["period_key"]
+            try:
+                parts = pk.split("-W")
+                if len(parts) == 2:
+                    year, week = int(parts[0]), int(parts[1])
+                    monday_date = datetime.strptime(f"{year}-W{week}-1", "%Y-W%W-%w").date()
+                    week_mondays.append(monday_date)
+            except (ValueError, IndexError):
+                continue
+    week_mondays = sorted(set(week_mondays), reverse=True)
+    weekly_report_streak = 0
+    if week_mondays:
+        weekly_report_streak = 1
+        for i in range(1, len(week_mondays)):
+            if (week_mondays[i - 1] - week_mondays[i]).days == 7:
+                weekly_report_streak += 1
+            else:
+                break
+
+    # 本周总得分
+    monday = today_date - timedelta(days=today_date.weekday())
+    monday_str = monday.strftime("%Y-%m-%d")
+    this_week_total = sum(
+        e.get("points", 0) for e in action_log
+        if e.get("time", "")[:10] >= monday_str
+        and e.get("source", "任务") != "成就"
+    ) + sum(
+        1 for r in resistance_log
+        if r.get("time", "")[:10] >= monday_str
+    )
+
+    # 本月活跃天数
+    month_prefix = today_str[:7]
+    monthly_active_days = sum(1 for d in daily_set if d[:7] == month_prefix)
+
+    # 东山再起：检查是否有 3+ 天的空档后重新记录
+    has_comeback = False
+    if len(daily_set) >= 2:
+        sorted_dates = sorted(daily_set)
+        for i in range(1, len(sorted_dates)):
+            try:
+                prev_d = datetime.strptime(sorted_dates[i - 1], "%Y-%m-%d").date()
+                curr_d = datetime.strptime(sorted_dates[i], "%Y-%m-%d").date()
+                if (curr_d - prev_d).days >= 3:
+                    has_comeback = True
+                    break
+            except ValueError:
+                continue
 
     def build_conditions():
         te = data.get("total_earned", 0)
@@ -228,6 +349,38 @@ def check_achievements(data, retroactive=False):
             "streak_30":         streak >= 30,
             "stat_100":          max_stat >= 100,
             "stat_500":          max_stat >= 500,
+            # —— 心情系列 ——
+            "mood_10":           mood_count >= 10,
+            "mood_50":           mood_count >= 50,
+            "mood_streak_7":     mood_streak >= 7,
+            # —— 全属性里程碑 ——
+            "all_attr_lv10":     min_stat >= 500,
+            "all_attr_lv15":     min_stat >= 750,
+            "all_attr_lv20":     min_stat >= 1000,
+            "all_attr_lv30":     min_stat >= 1500,
+            "all_attr_lv40":     min_stat >= 2000,
+            # —— 活跃里程碑 ——
+            "active_50":         active_days >= 50,
+            "active_150":        active_days >= 150,
+            "active_299":        active_days >= 299,
+            "active_365":        active_days >= 365,
+            # —— 阻力复盘进阶 ——
+            "resistance_50":     len(resistance_log) >= 50,
+            "resistance_100":    len(resistance_log) >= 100,
+            "resistance_streak_7": resistance_streak >= 7,
+            # —— 积分里程碑 ——
+            "two_thousand_pts":  te >= 2000,
+            "ten_thousand_pts":  te >= 10000,
+            # —— 兑换消耗 ——
+            "consumed_500":      total_consumed >= 500,
+            "consumed_1000":     total_consumed >= 1000,
+            "consumed_2000":     total_consumed >= 2000,
+            "consumed_5000":     total_consumed >= 5000,
+            # —— 其他 ——
+            "weekly_report_4":   weekly_report_streak >= 4,
+            "weekly_200":        this_week_total >= 200,
+            "monthly_20":        monthly_active_days >= 20,
+            "comeback_3day":     has_comeback,
         }
 
     newly_unlocked = []
@@ -254,6 +407,44 @@ def check_achievements(data, retroactive=False):
                 changed = True
 
     return newly_unlocked
+
+
+# ---------- 每日签到系统 ----------
+def get_checkin_streak(data):
+    """计算签到连续天数（从今天或昨天往回数）"""
+    checkin_log = data.get("checkin_log", [])
+    if not checkin_log:
+        return 0
+    checkin_set = set(checkin_log)
+    today = now_local().date()
+    if today.strftime("%Y-%m-%d") in checkin_set:
+        check_date = today
+    else:
+        check_date = today - timedelta(days=1)
+    streak = 0
+    while True:
+        ds = check_date.strftime("%Y-%m-%d")
+        if ds in checkin_set:
+            streak += 1
+            check_date -= timedelta(days=1)
+        else:
+            break
+    return streak
+
+
+def get_checkin_reward(streak):
+    """签到奖励：第1-4天 +2，第5天起 +5"""
+    if streak <= 0:
+        return 0
+    if streak <= 4:
+        return 2
+    return 5
+
+
+def has_checked_in_today(data):
+    """检查今天是否已签到"""
+    today = now_local().strftime("%Y-%m-%d")
+    return today in set(data.get("checkin_log", []))
 
 
 # ---------- 周报 / 月报生成 ----------
@@ -529,6 +720,7 @@ def new_data():
         "redemption_log": [],   # 兑换历史
         "total_earned": 0,
         "reports": [],          # 周报/月报存档
+        "checkin_log": [],      # 每日签到日期记录 ["YYYY-MM-DD", ...]
         "achievements": [
             {**a, "unlocked": False, "unlocked_time": None}
             for a in ACHIEVEMENT_DEFS
@@ -1119,6 +1311,42 @@ with st.sidebar:
     else:
         st.warning("💾 仅本地存档")
         st.caption("配置 JSONBin 后可手机同步")
+
+    # ---- 每日签到 ----
+    st.markdown("---")
+    st.markdown("**📅 每日签到**")
+    _checked_today = has_checked_in_today(data)
+    _checkin_streak = get_checkin_streak(data)
+    if _checked_today:
+        _today_reward = get_checkin_reward(_checkin_streak)
+        st.info(f"✅ 今日已签到 · 连续 **{_checkin_streak}** 天 · 今日 +{_today_reward} pts")
+    else:
+        _next_streak = _checkin_streak + 1
+        _next_reward = get_checkin_reward(_next_streak)
+        if st.button(f"📋 签到领 +{_next_reward} pts", use_container_width=True, type="primary"):
+            today_ds = now_local().strftime("%Y-%m-%d")
+            data.setdefault("checkin_log", []).append(today_ds)
+            _new_streak = get_checkin_streak(data)
+            _reward = get_checkin_reward(_new_streak)
+            data["total_earned"] += _reward
+            data["action_log"].append({
+                "time": now_str(),
+                "task": f"📅 每日签到（连续{_new_streak}天）",
+                "attribute": "",
+                "points": _reward,
+                "source": "签到",
+            })
+            newly = check_achievements(data)
+            save_data(data)
+            st.session_state.data = data
+            st.success(f"✅ 签到成功！连续 {_new_streak} 天，+{_reward} pts")
+            if newly:
+                st.balloons()
+            st.rerun()
+    if _checkin_streak > 0 and not _checked_today:
+        st.caption(f"当前连续签到 {_checkin_streak} 天，别断了！")
+    elif _checkin_streak >= 5:
+        st.caption(f"🔥 已连续签到 {_checkin_streak} 天，每天 +5 pts！")
 
 # --- 主题切换 ---
     st.markdown("---")
