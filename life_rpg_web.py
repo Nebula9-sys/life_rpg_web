@@ -208,7 +208,7 @@ def check_achievements(data, retroactive=False):
     active_days = len(daily_set)
 
     today_str = now_local().strftime("%Y-%m-%d")
-    today_actions = [e for e in action_log if e.get("time", "")[:10] == today_str and e.get("source", "任务") != "成就"]
+    today_actions = [e for e in action_log if e.get("time", "")[:10] == today_str and e.get("source", "任务") not in ("成就", "签到")]
     today_resist = [r for r in resistance_log if r.get("time", "")[:10] == today_str]
     today_total = sum(e.get("points", 0) for e in today_actions) + len(today_resist)
     today_attrs = set(e.get("attribute", "") for e in today_actions if e.get("points", 0) > 0)
@@ -298,7 +298,7 @@ def check_achievements(data, retroactive=False):
     this_week_total = sum(
         e.get("points", 0) for e in action_log
         if e.get("time", "")[:10] >= monday_str
-        and e.get("source", "任务") != "成就"
+        and e.get("source", "任务") not in ("成就", "签到")
     ) + sum(
         1 for r in resistance_log
         if r.get("time", "")[:10] >= monday_str
@@ -341,7 +341,7 @@ def check_achievements(data, retroactive=False):
             "daily_100":         today_total >= 100,
             "daily_balanced":    all_four,
             "daily_5_records":   len(today_actions) + len(today_resist) >= 5,
-            "first_task":        len([e for e in action_log if e.get("source", "任务") != "成就"]) >= 1,
+            "first_task":        len([e for e in action_log if e.get("source", "任务") not in ("成就", "签到")]) >= 1,
             "first_resistance":  len(resistance_log) >= 1,
             "first_redeem":      len(redemption_log) >= 1,
             "first_backdate":    has_backdated,
@@ -750,7 +750,9 @@ def cloud_load():
             timeout=10,
         )
         if r.status_code == 200:
-            return r.json()["record"]
+            record = r.json().get("record")
+            if isinstance(record, dict):
+                return record
     except Exception:
         pass
     return None
@@ -775,7 +777,9 @@ def local_load():
     if os.path.exists(LOCAL_FILE):
         try:
             with open(LOCAL_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return data
         except Exception:
             pass
     return None
@@ -795,6 +799,8 @@ def local_save(data):
 
 def _migrate_data(data):
     """数据迁移：补字段、兼容旧版、合并成就定义、追溯解锁。"""
+    if not isinstance(data, dict):
+        data = new_data()
     base = new_data()
     for k in base:
         if k not in data:
@@ -1168,9 +1174,16 @@ if not st.session_state.authed:
         pwd = st.text_input("🔑 输入密码", type="password", key="login_pwd")
         if st.button("⚔️ 进入系统", use_container_width=True):
             if pwd == PASSWORD:
-                st.session_state.authed = True
                 with st.spinner("读取存档中..."):
-                    st.session_state.data = load_data()
+                    try:
+                        _loaded = load_data()
+                        if not isinstance(_loaded, dict):
+                            _loaded = new_data()
+                    except Exception as e:
+                        st.error(f"⚠️ 存档读取失败，已使用新存档：{e}")
+                        _loaded = new_data()
+                st.session_state.authed = True
+                st.session_state.data = _loaded
                 st.rerun()
             else:
                 st.error("❌ 密码错误")
@@ -1262,6 +1275,15 @@ st.markdown(
 # ═══════════════════════════════════════════════════
 
 data = st.session_state.data
+# 安全兜底：如果 data 为 None 或非字典（如 load_data 曾异常），重新加载
+if not isinstance(data, dict):
+    try:
+        data = load_data()
+    except Exception:
+        data = new_data()
+    if not isinstance(data, dict):
+        data = new_data()
+    st.session_state.data = data
 
 # 展示追溯解锁的成就通知（load_data 时存入 session_state）
 if st.session_state.get("retroactive_achievements"):
@@ -2160,7 +2182,7 @@ with tab5:
     mood_data = {}
     for entry in data.get("action_log", []):
         source = entry.get("source", "任务")
-        if source == "成就":
+        if source in ("成就", "签到"):
             continue
         mood = entry.get("mood", "🙂")
         if mood not in VALID_MOODS:
@@ -2434,10 +2456,22 @@ with tab6:
     st.progress(len(unlocked) / max(len(achievements), 1))
     st.markdown("---")
 
-    cat_labels = {"cumulative": "📈 累积型成就", "daily": "📅 单日型成就", "special": "🎯 特殊行为型成就"}
-    cat_colors = {"cumulative": "#58CC02", "daily": "#1CB0F6", "special": "#CE82FF"}
+    cat_labels = {
+        "cumulative": "📈 累积型成就",
+        "daily": "📅 单日型成就",
+        "special": "🎯 特殊行为型成就",
+        "mood": "🎭 心情系列成就",
+        "milestone": "🎯 里程碑成就",
+    }
+    cat_colors = {
+        "cumulative": "#58CC02",
+        "daily": "#1CB0F6",
+        "special": "#CE82FF",
+        "mood": "#FF6B9D",
+        "milestone": "#FFA500",
+    }
 
-    for cat in ["cumulative", "daily", "special"]:
+    for cat in ["cumulative", "daily", "special", "mood", "milestone"]:
         cat_achs = [a for a in achievements if a.get("category") == cat]
         if not cat_achs:
             continue
