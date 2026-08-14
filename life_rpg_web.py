@@ -117,34 +117,21 @@ def encouragement_for(attr_key):
     return random.choice(messages.get(attr_key, ["✨ 你又向前走了一点。"]))
 
 
-def show_achievement_notifications(newly):
-    if newly:
-        st.balloons()
-    for ach in newly:
-        st.success(
-            f"🏅 **成就解锁！{ach['name']}**\n\n{ach['desc']}\n\n💰 Bonus +{ach['bonus']} pts！",
-            icon="🏅"
-        )
+def flash_success(message, icon="✅", position="top"):
+    """暂存成功消息，rerun 后在指定位置显示。position: top/record/checkin/redeem/settings"""
+    st.session_state["flash_msg"] = {"type": "success", "message": message, "icon": icon, "position": position}
 
 
-def flash_success(message, icon="✅"):
-    """暂存成功消息，rerun 后在页面顶部显示（解决 st.success+rerun 消息丢失问题）"""
-    st.session_state["flash_msg"] = {"type": "success", "message": message, "icon": icon}
-
-
-def flash_info(message):
-    """暂存提示消息"""
-    st.session_state["flash_msg"] = {"type": "info", "message": message, "icon": "ℹ️"}
-
-
-def show_flash_message():
-    """在页面顶部显示暂存的消息（显示后自动清除）"""
-    flash = st.session_state.pop("flash_msg", None)
-    if flash:
-        if flash["type"] == "success":
-            st.success(flash["message"], icon=flash.get("icon", "✅"))
-        elif flash["type"] == "info":
-            st.info(flash["message"], icon=flash.get("icon", "ℹ️"))
+def show_flash_message(position="top"):
+    """在指定位置显示暂存的消息（显示后自动清除）"""
+    flash = st.session_state.get("flash_msg")
+    if not flash or flash.get("position", "top") != position:
+        return
+    st.session_state.pop("flash_msg", None)
+    if flash["type"] == "success":
+        st.success(flash["message"], icon=flash.get("icon", "✅"))
+    elif flash["type"] == "info":
+        st.info(flash["message"], icon=flash.get("icon", "ℹ️"))
 
 
 VALID_ATTRS = {"Productivity", "Creativity", "Willpower", "Vitality"}
@@ -1329,7 +1316,7 @@ if not isinstance(data, dict):
     st.session_state.data = data
 
 # 显示暂存的操作反馈消息（解决 st.success+rerun 消息丢失问题）
-show_flash_message()
+show_flash_message("top")
 
 # 展示追溯解锁的成就通知（load_data 时存入 session_state）
 if st.session_state.get("retroactive_achievements"):
@@ -1383,6 +1370,7 @@ with st.sidebar:
     # ---- 每日签到 ----
     st.markdown("---")
     st.markdown("**📅 每日签到**")
+    show_flash_message("checkin")
     _checked_today = has_checked_in_today(data)
     _checkin_streak = get_checkin_streak(data)
     if _checked_today:
@@ -1411,7 +1399,7 @@ with st.sidebar:
             if newly:
                 _ach_names = "、".join(a["name"] for a in newly)
                 _flash += f"\n\n🏅 成就解锁：{_ach_names}"
-            flash_success(_flash, icon="📋")
+            flash_success(_flash, icon="📋", position="checkin")
             if newly:
                 st.balloons()
             st.rerun()
@@ -1461,6 +1449,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(
 
 # ════════ Tab 1：记录任务 ════════
 with tab1:
+    show_flash_message("record")
     st.markdown("### 📝 记录完成的任务")
     st.caption("每完成一件事，就赚一点经验值。积少成多。")
 
@@ -1527,7 +1516,7 @@ with tab1:
                         if newly:
                             _ach_names = "、".join(a["name"] for a in newly)
                             _flash += f"\n\n🏅 成就解锁：{_ach_names}"
-                        flash_success(_flash, icon="🐾")
+                        flash_success(_flash, icon="🐾", position="record")
 
                         if points >= 10 or newly:
                             st.balloons()
@@ -1628,7 +1617,7 @@ with tab1:
             if newly:
                 _ach_names = "、".join(a["name"] for a in newly)
                 _flash += f"\n\n🏅 成就解锁：{_ach_names}"
-            flash_success(_flash, icon="✅")
+            flash_success(_flash, icon="✅", position="record")
 
             if points >= 20 or newly:
                 st.balloons()
@@ -1639,6 +1628,7 @@ with tab1:
 
 # ════════ Tab 2：阻力复盘 ════════
 with tab2:
+    show_flash_message("resistance")
     st.markdown("### 🚧 阻力复盘")
     st.info(
         "💪 记录一次启动困难 → **+1 Willpower**\n\n面对问题本身就是勇气。写下来，下次就不怕了。"
@@ -1687,13 +1677,14 @@ with tab2:
         if newly:
             _ach_names = "、".join(a["name"] for a in newly)
             _flash += f"\n\n🏅 成就解锁：{_ach_names}"
-        flash_success(_flash, icon="💪")
+        flash_success(_flash, icon="💪", position="resistance")
         if newly:
             st.balloons()
         st.rerun()
         
 # ════════ Tab 3：奖励商店 ════════
 with tab3:
+    show_flash_message("redeem")
     _total_spent = sum(r.get("cost", 0) for r in data.get("redemption_log", []))
     _total = data.get("total_earned", 0) - _total_spent
 
@@ -1755,7 +1746,7 @@ with tab3:
                         if newly:
                             _ach_names = "、".join(a["name"] for a in newly)
                             _flash += f"\n\n🏅 成就解锁：{_ach_names}"
-                        flash_success(_flash, icon="🎁")
+                        flash_success(_flash, icon="🎁", position="redeem")
                         if newly:
                             st.balloons()
                         st.rerun()
@@ -1791,6 +1782,7 @@ with tab3:
 
 # ════════ Tab 4：历史日志 ════════
 with tab4:
+    show_flash_message("history")
     st.markdown("### 📋 历史日志")
 
     log1, log2, log3 = st.tabs(["📝 行为日志", "🚧 阻力记录", "📜 兑换记录"])
@@ -1865,7 +1857,7 @@ with tab4:
                                     save_data(data)
                                     st.session_state.data = data
                                     st.session_state.pop(_edit_key, None)
-                                    flash_success("✅ 日期已修改！")
+                                    flash_success("✅ 日期已修改！", position="history")
                                     st.rerun()
                             with _ec2:
                                 if st.button("取消", key=f"cancel_{_edit_key}"):
@@ -1924,7 +1916,7 @@ with tab4:
                                 save_data(data)
                                 st.session_state.data = data
                                 st.session_state.pop(_edit_key, None)
-                                flash_success("✅ 日期已修改！")
+                                flash_success("✅ 日期已修改！", position="history")
                                 st.rerun()
                         with _ec2:
                             if st.button("取消", key=f"cancel_{_edit_key}"):
@@ -1960,6 +1952,7 @@ with tab4:
                 
 # ════════ Tab 5：统计 ════════
 with tab5:
+    show_flash_message("stats")
     st.markdown("### 📊 统计")
 
     # ---- 周报 / 月报 ----
@@ -2040,7 +2033,7 @@ with tab5:
                     data["reports"] = reports
                     save_data(data)
                     st.session_state.data = data
-                    flash_success("✅ 本周周报已更新")
+                    flash_success("✅ 本周周报已更新", position="stats")
                     st.rerun()
                 else:
                     report_text = generate_weekly_report(data)
@@ -2054,7 +2047,7 @@ with tab5:
                     data["reports"] = reports
                     save_data(data)
                     st.session_state.data = data
-                    flash_success("✅ 周报已生成")
+                    flash_success("✅ 周报已生成", position="stats")
                     st.rerun()
         with rc2:
             if st.button("📅 生成本月月报", use_container_width=True):
@@ -2068,7 +2061,7 @@ with tab5:
                     data["reports"] = reports
                     save_data(data)
                     st.session_state.data = data
-                    flash_success("✅ 本月月报已更新")
+                    flash_success("✅ 本月月报已更新", position="stats")
                     st.rerun()
                 else:
                     report_text = generate_monthly_report(data)
@@ -2082,7 +2075,7 @@ with tab5:
                     data["reports"] = reports
                     save_data(data)
                     st.session_state.data = data
-                    flash_success("✅ 月报已生成")
+                    flash_success("✅ 月报已生成", position="stats")
                     st.rerun()
 
         # 显示最近报告
@@ -2377,6 +2370,7 @@ with tab5:
 
 # ════════ Tab 7：设置 ════════
 with tab7:
+    show_flash_message("settings")
     st.markdown("### ⚙️ 设置")
 
     # -- 快捷按钮设置 --
@@ -2423,7 +2417,7 @@ with tab7:
             )
             save_data(data)
             st.session_state.data = data
-            flash_success("✅ 已添加快捷按钮: " + new_q_name.strip() + " (+" + str(new_q_points) + ")")
+            flash_success("✅ 已添加快捷按钮: " + new_q_name.strip() + " (+" + str(new_q_points) + ")", position="settings")
             st.rerun()
         else:
             st.error("请输入按钮名称")
@@ -2444,7 +2438,7 @@ with tab7:
             removed = data["quick_actions"].pop(del_q_idx)
             save_data(data)
             st.session_state.data = data
-            flash_success("✅ 已删除快捷按钮: " + removed.get("name", "未命名动作"))
+            flash_success("✅ 已删除快捷按钮: " + removed.get("name", "未命名动作"), position="settings")
             st.rerun()
     else:
         st.caption("暂无快捷按钮。添加几个常用动作吧。")
@@ -2468,7 +2462,7 @@ with tab7:
             data["rewards"].append({"name": new_name.strip(), "cost": int(new_cost)})
             save_data(data)
             st.session_state.data = data
-            flash_success("✅ 已添加: " + new_name + " (" + str(new_cost) + " pts)")
+            flash_success("✅ 已添加: " + new_name + " (" + str(new_cost) + " pts)", position="settings")
             st.rerun()
         else:
             st.error("请输入奖励名称")
@@ -2487,7 +2481,7 @@ with tab7:
             data["rewards"].pop(del_r_idx)
             save_data(data)
             st.session_state.data = data
-            flash_success("✅ 已删除")
+            flash_success("✅ 已删除", position="settings")
             st.rerun()
     else:
         st.caption("暂无奖励可删除")
@@ -2506,7 +2500,7 @@ with tab7:
             save_data(data)
             st.session_state.data = data
             st.session_state["confirm_reset_stats"] = False
-            flash_success("✅ 属性已清零")
+            flash_success("✅ 属性已清零", position="settings")
             st.rerun()
 
     with col_r2:
@@ -2516,7 +2510,7 @@ with tab7:
             save_data(data)
             st.session_state.data = data
             st.session_state["confirm_clear_data"] = False
-            flash_success("✅ 已恢复初始状态")
+            flash_success("✅ 已恢复初始状态", position="settings")
             st.rerun()
 
     with col_r3:
@@ -2530,7 +2524,7 @@ with tab7:
             if newly:
                 _ach_names = "、".join(a["name"] for a in newly)
                 _flash += f"\n\n🏅 成就解锁：{_ach_names}"
-            flash_success(_flash, icon="🩹")
+            flash_success(_flash, icon="🩹", position="settings")
             if newly:
                 st.balloons()
             st.rerun()
