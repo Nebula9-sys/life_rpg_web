@@ -127,6 +127,26 @@ def show_achievement_notifications(newly):
         )
 
 
+def flash_success(message, icon="✅"):
+    """暂存成功消息，rerun 后在页面顶部显示（解决 st.success+rerun 消息丢失问题）"""
+    st.session_state["flash_msg"] = {"type": "success", "message": message, "icon": icon}
+
+
+def flash_info(message):
+    """暂存提示消息"""
+    st.session_state["flash_msg"] = {"type": "info", "message": message, "icon": "ℹ️"}
+
+
+def show_flash_message():
+    """在页面顶部显示暂存的消息（显示后自动清除）"""
+    flash = st.session_state.pop("flash_msg", None)
+    if flash:
+        if flash["type"] == "success":
+            st.success(flash["message"], icon=flash.get("icon", "✅"))
+        elif flash["type"] == "info":
+            st.info(flash["message"], icon=flash.get("icon", "ℹ️"))
+
+
 VALID_ATTRS = {"Productivity", "Creativity", "Willpower", "Vitality"}
 
 
@@ -191,6 +211,14 @@ ACHIEVEMENT_DEFS = [
     {"id": "weekly_200",        "name": "⚡ 单周200分",   "desc": "一周内总得分超 200",    "category": "daily",     "bonus": 25},
     {"id": "monthly_20",        "name": "🌙 月度20天",    "desc": "单月活跃超 20 天",     "category": "daily",     "bonus": 30},
     {"id": "comeback_3day",     "name": "🔄 东山再起",    "desc": "断签 3 天后重新记录",   "category": "special",   "bonus": 10},
+    # —— 签到系列 ——
+    {"id": "checkin_30",        "name": "📅 签到30天",   "desc": "连续签到 30 天",        "category": "checkin",   "bonus": 20},
+    {"id": "checkin_50",        "name": "📆 签到50天",   "desc": "连续签到 50 天",        "category": "checkin",   "bonus": 20},
+    {"id": "checkin_100",       "name": "💯 签到100天",  "desc": "连续签到 100 天",       "category": "checkin",   "bonus": 20},
+    {"id": "checkin_222",       "name": "🎯 签到222天",  "desc": "连续签到 222 天",       "category": "checkin",   "bonus": 20},
+    {"id": "checkin_total_100", "name": "📦 累计100天",  "desc": "累计签到 100 天",       "category": "checkin",   "bonus": 20},
+    {"id": "checkin_total_222", "name": "📦 累计222天",  "desc": "累计签到 222 天",       "category": "checkin",   "bonus": 20},
+    {"id": "checkin_total_365", "name": "🗓️ 累计365天",  "desc": "累计签到 365 天",       "category": "checkin",   "bonus": 100},
 ]
 
 
@@ -308,6 +336,10 @@ def check_achievements(data, retroactive=False):
     month_prefix = today_str[:7]
     monthly_active_days = sum(1 for d in daily_set if d[:7] == month_prefix)
 
+    # 签到统计
+    checkin_streak = get_checkin_streak(data)
+    total_checkin_days = len(data.get("checkin_log", []))
+
     # 东山再起：检查是否有 3+ 天的空档后重新记录
     has_comeback = False
     if len(daily_set) >= 2:
@@ -381,6 +413,14 @@ def check_achievements(data, retroactive=False):
             "weekly_200":        this_week_total >= 200,
             "monthly_20":        monthly_active_days >= 20,
             "comeback_3day":     has_comeback,
+            # —— 签到系列 ——
+            "checkin_30":        checkin_streak >= 30,
+            "checkin_50":        checkin_streak >= 50,
+            "checkin_100":       checkin_streak >= 100,
+            "checkin_222":       checkin_streak >= 222,
+            "checkin_total_100": total_checkin_days >= 100,
+            "checkin_total_222": total_checkin_days >= 222,
+            "checkin_total_365": total_checkin_days >= 365,
         }
 
     newly_unlocked = []
@@ -813,6 +853,9 @@ def _migrate_data(data):
         r.pop("claimed", None)
         r["cost"] = max(r.get("cost", 1), 1)
     # 合并新成就定义 + 更新已有成就的 bonus/desc（保留 unlocked 状态）
+    # 先清理已移除的旧成就（不在 ACHIEVEMENT_DEFS 中的）
+    valid_ids = {a["id"] for a in ACHIEVEMENT_DEFS}
+    data["achievements"] = [a for a in data.get("achievements", []) if a["id"] in valid_ids]
     existing_map = {a["id"]: a for a in data.get("achievements", [])}
     for ach_def in ACHIEVEMENT_DEFS:
         if ach_def["id"] in existing_map:
@@ -1285,6 +1328,9 @@ if not isinstance(data, dict):
         data = new_data()
     st.session_state.data = data
 
+# 显示暂存的操作反馈消息（解决 st.success+rerun 消息丢失问题）
+show_flash_message()
+
 # 展示追溯解锁的成就通知（load_data 时存入 session_state）
 if st.session_state.get("retroactive_achievements"):
     retro_achievements = st.session_state.pop("retroactive_achievements")
@@ -1326,7 +1372,7 @@ with st.sidebar:
                     cloud_data = _migrate_data(cloud_data)
                     st.session_state.data = cloud_data
                     data = cloud_data
-                    st.success("✅ 已拉取云端最新数据")
+                    flash_success("✅ 已拉取云端最新数据")
                     st.rerun()
                 else:
                     st.error("⚠️ 同步失败，请检查网络后重试")
@@ -1361,7 +1407,11 @@ with st.sidebar:
             newly = check_achievements(data)
             save_data(data)
             st.session_state.data = data
-            st.success(f"✅ 签到成功！连续 {_new_streak} 天，+{_reward} pts")
+            _flash = f"✅ 签到成功！连续 {_new_streak} 天，+{_reward} pts"
+            if newly:
+                _ach_names = "、".join(a["name"] for a in newly)
+                _flash += f"\n\n🏅 成就解锁：{_ach_names}"
+            flash_success(_flash, icon="📋")
             if newly:
                 st.balloons()
             st.rerun()
@@ -1471,16 +1521,15 @@ with tab1:
                         save_data(data)
                         st.session_state.data = data
 
-                        show_achievement_notifications(newly)
-
                         new_val = data["stats"][attr_key]
                         msg = encouragement_for(attr_key)
-                        st.success(
-                            f"✅ {name} | +{points} {attr_key}，当前 {new_val}\n\n{msg}",
-                            icon="🐾"
-                        )
+                        _flash = f"✅ {name} | +{points} {attr_key}，当前 {new_val}\n\n{msg}"
+                        if newly:
+                            _ach_names = "、".join(a["name"] for a in newly)
+                            _flash += f"\n\n🏅 成就解锁：{_ach_names}"
+                        flash_success(_flash, icon="🐾")
 
-                        if points >= 10 and not newly:
+                        if points >= 10 or newly:
                             st.balloons()
                         st.rerun()
 
@@ -1573,16 +1622,15 @@ with tab1:
             save_data(data)
             st.session_state.data = data
 
-            show_achievement_notifications(newly)
-
             new_val = data["stats"][attr_key]
             msg = encouragement_for(attr_key)
-            st.success(
-                f"🎉 +{points} {attr_key}！当前 {new_val}\n\n{msg}",
-                icon="✅"
-            )
+            _flash = f"🎉 +{points} {attr_key}！当前 {new_val}\n\n{msg}"
+            if newly:
+                _ach_names = "、".join(a["name"] for a in newly)
+                _flash += f"\n\n🏅 成就解锁：{_ach_names}"
+            flash_success(_flash, icon="✅")
 
-            if points >= 20 and not newly:
+            if points >= 20 or newly:
                 st.balloons()
             if "task_date" in st.session_state:
                 del st.session_state["task_date"]
@@ -1634,10 +1682,14 @@ with tab2:
         save_data(data)
         st.session_state.data = data
 
-        show_achievement_notifications(newly)
-
         count = len(data["resistance_log"])
-        st.success(f"🔥 +1 Willpower | 直面阻力 {count} 次", icon="💪")
+        _flash = f"🔥 +1 Willpower | 直面阻力 {count} 次\n\n💪 记录阻力本身就是勇气，你做到了。"
+        if newly:
+            _ach_names = "、".join(a["name"] for a in newly)
+            _flash += f"\n\n🏅 成就解锁：{_ach_names}"
+        flash_success(_flash, icon="💪")
+        if newly:
+            st.balloons()
         st.rerun()
         
 # ════════ Tab 3：奖励商店 ════════
@@ -1699,12 +1751,13 @@ with tab3:
                         newly = check_achievements(data)
                         save_data(data)
                         st.session_state.data = data
-                        st.success(
-                            "🎉🎉🎉 **兑换成功！** "
-                            + reward.get("name", "未命名")
-                            + " — 好好享受！"
-                        )
-                        show_achievement_notifications(newly)
+                        _flash = f"🎉🎉🎉 **兑换成功！** {reward.get('name', '未命名')} — 好好享受！"
+                        if newly:
+                            _ach_names = "、".join(a["name"] for a in newly)
+                            _flash += f"\n\n🏅 成就解锁：{_ach_names}"
+                        flash_success(_flash, icon="🎁")
+                        if newly:
+                            st.balloons()
                         st.rerun()
                 else:
                     st.button("积分不够", disabled=True, key="r_" + str(i), use_container_width=True)
@@ -1760,7 +1813,10 @@ with tab4:
             else:
                 show_count_action = len(action_logs)
             st.markdown("---")
-            for entry in reversed(action_logs[-show_count_action:]):
+            # 用索引遍历，方便修改日期时定位
+            _start = max(0, len(action_logs) - show_count_action)
+            for _idx in range(len(action_logs) - 1, _start - 1, -1):
+                entry = action_logs[_idx]
                 source = entry.get("source", "任务")
                 if source == "成就":
                     attr_emoji = "🏅"
@@ -1787,6 +1843,35 @@ with tab4:
                         st.markdown("**属性**: " + str(entry.get("attribute")))
                     st.markdown("**得分**: +" + str(entry.get("points", "?")))
 
+                    # 修改日期（成就类不允许改）
+                    if source != "成就":
+                        _edit_key = f"edit_action_{_idx}"
+                        if st.button("✏️ 修改日期", key=f"btn_{_edit_key}"):
+                            st.session_state[_edit_key] = not st.session_state.get(_edit_key, False)
+
+                        if st.session_state.get(_edit_key):
+                            _time_str = entry.get("time", "")
+                            try:
+                                _cur_date = datetime.strptime(_time_str[:10], "%Y-%m-%d").date()
+                            except (ValueError, TypeError):
+                                _cur_date = now_local().date()
+                            _new_date = st.date_input("新日期", value=_cur_date, key=f"input_{_edit_key}")
+                            _ec1, _ec2 = st.columns(2)
+                            with _ec1:
+                                if st.button("💾 保存", key=f"save_{_edit_key}", type="primary"):
+                                    _old_time = _time_str[11:] if len(_time_str) > 11 else "12:00"
+                                    entry["time"] = _new_date.strftime("%Y-%m-%d") + " " + _old_time
+                                    entry["backdated"] = (_new_date != now_local().date())
+                                    save_data(data)
+                                    st.session_state.data = data
+                                    st.session_state.pop(_edit_key, None)
+                                    flash_success("✅ 日期已修改！")
+                                    st.rerun()
+                            with _ec2:
+                                if st.button("取消", key=f"cancel_{_edit_key}"):
+                                    st.session_state.pop(_edit_key, None)
+                                    st.rerun()
+
     # --- 阻力记录 ---
     with log2:
         resist_logs = data.get("resistance_log", [])
@@ -1796,16 +1881,18 @@ with tab4:
             st.caption("共 " + str(len(resist_logs)) + " 次直面阻力 💪")
             if len(resist_logs) > 10:
                 show_count_resist = st.slider(
-                    "显示条数", 
-                    min_value=10, 
-                    max_value=min(len(resist_logs), 200), 
+                    "显示条数",
+                    min_value=10,
+                    max_value=min(len(resist_logs), 200),
                     value=min(30, len(resist_logs)),
                     key="show_count_resist"
                 )
             else:
                 show_count_resist = len(resist_logs)
             st.markdown("---")
-            for entry in reversed(resist_logs[-show_count_resist:]):
+            _r_start = max(0, len(resist_logs) - show_count_resist)
+            for _ridx in range(len(resist_logs) - 1, _r_start - 1, -1):
+                entry = resist_logs[_ridx]
                 header = (
                     str(entry.get("reason", "?"))
                     + " — "
@@ -1816,6 +1903,33 @@ with tab4:
                     st.markdown(
                         "💡 **改进策略**: " + str(entry.get("strategy", "?"))
                     )
+
+                    # 修改日期
+                    _edit_key = f"edit_resist_{_ridx}"
+                    if st.button("✏️ 修改日期", key=f"btn_{_edit_key}"):
+                        st.session_state[_edit_key] = not st.session_state.get(_edit_key, False)
+
+                    if st.session_state.get(_edit_key):
+                        _time_str = entry.get("time", "")
+                        try:
+                            _cur_date = datetime.strptime(_time_str[:10], "%Y-%m-%d").date()
+                        except (ValueError, TypeError):
+                            _cur_date = now_local().date()
+                        _new_date = st.date_input("新日期", value=_cur_date, key=f"input_{_edit_key}")
+                        _ec1, _ec2 = st.columns(2)
+                        with _ec1:
+                            if st.button("💾 保存", key=f"save_{_edit_key}", type="primary"):
+                                _old_time = _time_str[11:] if len(_time_str) > 11 else "12:00"
+                                entry["time"] = _new_date.strftime("%Y-%m-%d") + " " + _old_time
+                                save_data(data)
+                                st.session_state.data = data
+                                st.session_state.pop(_edit_key, None)
+                                flash_success("✅ 日期已修改！")
+                                st.rerun()
+                        with _ec2:
+                            if st.button("取消", key=f"cancel_{_edit_key}"):
+                                st.session_state.pop(_edit_key, None)
+                                st.rerun()
 
     # --- 兑换记录 ---
     with log3:
@@ -1926,7 +2040,7 @@ with tab5:
                     data["reports"] = reports
                     save_data(data)
                     st.session_state.data = data
-                    st.success("✅ 本周周报已更新")
+                    flash_success("✅ 本周周报已更新")
                     st.rerun()
                 else:
                     report_text = generate_weekly_report(data)
@@ -1940,7 +2054,7 @@ with tab5:
                     data["reports"] = reports
                     save_data(data)
                     st.session_state.data = data
-                    st.success("✅ 周报已生成")
+                    flash_success("✅ 周报已生成")
                     st.rerun()
         with rc2:
             if st.button("📅 生成本月月报", use_container_width=True):
@@ -1954,7 +2068,7 @@ with tab5:
                     data["reports"] = reports
                     save_data(data)
                     st.session_state.data = data
-                    st.success("✅ 本月月报已更新")
+                    flash_success("✅ 本月月报已更新")
                     st.rerun()
                 else:
                     report_text = generate_monthly_report(data)
@@ -1968,7 +2082,7 @@ with tab5:
                     data["reports"] = reports
                     save_data(data)
                     st.session_state.data = data
-                    st.success("✅ 月报已生成")
+                    flash_success("✅ 月报已生成")
                     st.rerun()
 
         # 显示最近报告
@@ -2309,13 +2423,8 @@ with tab7:
             )
             save_data(data)
             st.session_state.data = data
-            st.success(
-                "✅ 已添加快捷按钮: "
-                + new_q_name.strip()
-                + " (+"
-                + str(new_q_points)
-                + ")"
-            )
+            flash_success("✅ 已添加快捷按钮: " + new_q_name.strip() + " (+" + str(new_q_points) + ")")
+            st.rerun()
         else:
             st.error("请输入按钮名称")
 
@@ -2335,7 +2444,8 @@ with tab7:
             removed = data["quick_actions"].pop(del_q_idx)
             save_data(data)
             st.session_state.data = data
-            st.success("✅ 已删除快捷按钮: " + removed.get("name", "未命名动作"))
+            flash_success("✅ 已删除快捷按钮: " + removed.get("name", "未命名动作"))
+            st.rerun()
     else:
         st.caption("暂无快捷按钮。添加几个常用动作吧。")
 
@@ -2358,7 +2468,7 @@ with tab7:
             data["rewards"].append({"name": new_name.strip(), "cost": int(new_cost)})
             save_data(data)
             st.session_state.data = data
-            st.success("✅ 已添加: " + new_name + " (" + str(new_cost) + " pts)")
+            flash_success("✅ 已添加: " + new_name + " (" + str(new_cost) + " pts)")
             st.rerun()
         else:
             st.error("请输入奖励名称")
@@ -2377,7 +2487,7 @@ with tab7:
             data["rewards"].pop(del_r_idx)
             save_data(data)
             st.session_state.data = data
-            st.success("✅ 已删除")
+            flash_success("✅ 已删除")
             st.rerun()
     else:
         st.caption("暂无奖励可删除")
@@ -2396,7 +2506,7 @@ with tab7:
             save_data(data)
             st.session_state.data = data
             st.session_state["confirm_reset_stats"] = False
-            st.success("✅ 属性已清零")
+            flash_success("✅ 属性已清零")
             st.rerun()
 
     with col_r2:
@@ -2406,7 +2516,7 @@ with tab7:
             save_data(data)
             st.session_state.data = data
             st.session_state["confirm_clear_data"] = False
-            st.success("✅ 已恢复初始状态")
+            flash_success("✅ 已恢复初始状态")
             st.rerun()
 
     with col_r3:
@@ -2416,12 +2526,13 @@ with tab7:
             save_data(data)
             st.session_state.data = data
             s = data["stats"]
-            st.success(
-                f"✅ 已从历史重建属性！\n\n"
-                f"⚡{s['Productivity']} 💡{s['Creativity']} "
-                f"🔥{s['Willpower']} 💚{s['Vitality']}"
-            )
-            show_achievement_notifications(newly)
+            _flash = f"✅ 已从历史重建属性！\n\n⚡{s['Productivity']} 💡{s['Creativity']} 🔥{s['Willpower']} 💚{s['Vitality']}"
+            if newly:
+                _ach_names = "、".join(a["name"] for a in newly)
+                _flash += f"\n\n🏅 成就解锁：{_ach_names}"
+            flash_success(_flash, icon="🩹")
+            if newly:
+                st.balloons()
             st.rerun()
 
 
@@ -2462,6 +2573,7 @@ with tab6:
         "special": "🎯 特殊行为型成就",
         "mood": "🎭 心情系列成就",
         "milestone": "🎯 里程碑成就",
+        "checkin": "📋 签到系列成就",
     }
     cat_colors = {
         "cumulative": "#58CC02",
@@ -2469,12 +2581,15 @@ with tab6:
         "special": "#CE82FF",
         "mood": "#FF6B9D",
         "milestone": "#FFA500",
+        "checkin": "#20B2AA",
     }
 
-    for cat in ["cumulative", "daily", "special", "mood", "milestone"]:
+    for cat in ["cumulative", "daily", "special", "mood", "milestone", "checkin"]:
         cat_achs = [a for a in achievements if a.get("category") == cat]
         if not cat_achs:
             continue
+        # 同类成就按 bonus 升序排列（简单的在前）
+        cat_achs = sorted(cat_achs, key=lambda a: a.get("bonus", 0))
         st.markdown(f"#### {cat_labels.get(cat, cat)}")
 
         badges_html = '<div style="display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px;">'
