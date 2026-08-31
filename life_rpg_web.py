@@ -1345,6 +1345,9 @@ h4, h5, h6 { color: [tx_s] !important; }
     font-weight: 600;
     box-shadow: 0 3px 0 [ac_d];
 }
+.stButton > button p, .stButton > button span {
+    color: inherit !important;
+}
 .stButton > button[kind="primary"]:hover {
     filter: brightness(1.08);
     box-shadow: 0 4px 0 [ac_d];
