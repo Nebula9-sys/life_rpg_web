@@ -1188,7 +1188,7 @@ def get_theme_css(theme_name):
             "tx_p": "#9aafc0",
             "ac": "#7a9eb0", "ac_l": "#9ab8c8", "ac_d": "#5a8092",
             "bd": "#c0d0da",
-            "p1": "#5a8092", "p2": "#7a9eb0",
+            "p1": "#5a8092", "p2": "#7a9eb0", "p_tx": "#ffffff",
             "card": "#ffffff", "card_bd": "#dce3ea", "sh": "rgba(42,58,74,0.10)",
             "ok_b": "#d4edda", "ok_t": "#2d5a2d", "ok_d": "#8fd49a",
             "in_b": "#d6eaf5", "in_t": "#2a5570", "in_d": "#8ac0d8",
@@ -1204,7 +1204,7 @@ def get_theme_css(theme_name):
             "tx_p": "#b8a0aa",
             "ac": "#c7958d", "ac_l": "#d4a8a0", "ac_d": "#a07570",
             "bd": "#ddd0cc",
-            "p1": "#a07570", "p2": "#c7958d",
+            "p1": "#a07570", "p2": "#c7958d", "p_tx": "#ffffff",
             "card": "#ffffff", "card_bd": "#eee0dd", "sh": "rgba(74,53,64,0.10)",
             "ok_b": "#d4edda", "ok_t": "#2d5a2d", "ok_d": "#8fd49a",
             "in_b": "#d6eaf5", "in_t": "#2a5570", "in_d": "#8ac0d8",
@@ -1220,7 +1220,7 @@ def get_theme_css(theme_name):
             "tx_p": "#a89898",
             "ac": "#7fc5ca", "ac_l": "#9fe6dc", "ac_d": "#5a9ea5",
             "bd": "#c0d5d0",
-            "p1": "#5a3839", "p2": "#764f51",
+            "p1": "#5a3839", "p2": "#764f51", "p_tx": "#ffffff",
             "card": "#ffffff", "card_bd": "#dcede8", "sh": "rgba(58,40,40,0.10)",
             "ok_b": "#d4edda", "ok_t": "#2d5a2d", "ok_d": "#8fd49a",
             "in_b": "#d6eaf5", "in_t": "#2a5570", "in_d": "#8ac0d8",
@@ -1236,7 +1236,7 @@ def get_theme_css(theme_name):
             "tx_p": "#6b6b76",
             "ac": "#818cf8", "ac_l": "#a5b4fc", "ac_d": "#6366f1",
             "bd": "#2a2d3a",
-            "p1": "#6366f1", "p2": "#818cf8",
+            "p1": "#6366f1", "p2": "#818cf8", "p_tx": "#e4e4e7",
             "card": "#1e2130", "card_bd": "#2a2d3a", "sh": "rgba(0,0,0,0.35)",
             "ok_b": "rgba(34,197,94,0.15)", "ok_t": "#86efac", "ok_d": "rgba(34,197,94,0.3)",
             "in_b": "rgba(59,130,246,0.15)", "in_t": "#93c5fd", "in_d": "rgba(59,130,246,0.3)",
@@ -1252,7 +1252,7 @@ def get_theme_css(theme_name):
             "tx_p": "#a0a0b8",
             "ac": "#ff6b35", "ac_l": "#ff8c42", "ac_d": "#e55320",
             "bd": "#e5e0d0",
-            "p1": "#ff6b35", "p2": "#ff8c42",
+            "p1": "#ff6b35", "p2": "#ff8c42", "p_tx": "#1a1a2e",
             "card": "#ffffff", "card_bd": "#f0e6d0", "sh": "rgba(255,107,53,0.12)",
             "ok_b": "#d4edda", "ok_t": "#2d5a2d", "ok_d": "#8fd49a",
             "in_b": "#d6eaf5", "in_t": "#2a5570", "in_d": "#8ac0d8",
@@ -1341,12 +1341,12 @@ h4, h5, h6 { color: [tx_s] !important; }
 .stButton > button[kind="primary"] {
     background: linear-gradient(135deg, [p1], [p2]);
     border-color: [ac_d];
-    color: [tx_h];
+    color: [p_tx];
     font-weight: 600;
     box-shadow: 0 3px 0 [ac_d];
 }
 .stButton > button[kind="primary"]:hover {
-    background: linear-gradient(135deg, [p2], [ac_l]);
+    filter: brightness(1.08);
     box-shadow: 0 4px 0 [ac_d];
     transform: translateY(-1px);
 }
@@ -1420,7 +1420,7 @@ h4, h5, h6 { color: [tx_s] !important; }
     font-size: 1.05rem;
     font-weight: 600;
 }
-.stMarkdown .title-badge-main { color: [tx_h] !important; }
+.stMarkdown .title-badge-main { color: [p_tx] !important; }
 .title-badge-sub {
     display: inline-block;
     padding: 0.25rem 0.9rem;
