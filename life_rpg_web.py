@@ -223,6 +223,8 @@ def remove_action_entry(data, idx):
         ds = entry.get("time", "")[:10]
         if ds in data.get("checkin_log", []):
             data["checkin_log"].remove(ds)
+        if ds in data.get("repaired_checkins", []):
+            data["repaired_checkins"].remove(ds)
 
 
 def remove_resistance_entry(data, idx):
@@ -518,6 +520,70 @@ def has_checked_in_today(data):
     return today in set(data.get("checkin_log", []))
 
 
+# ---------- 补签卡 ----------
+def real_checkin_count(data):
+    """真实签到天数（补签的日期不计入送卡进度）"""
+    checkins = set(data.get("checkin_log", []))
+    repaired = set(data.get("repaired_checkins", [])) & checkins
+    return len(checkins) - len(repaired)
+
+
+def available_checkin_cards(data):
+    """当前可用补签卡 = 累计真实签到每满 30 天送 1 张 + 已购买 - 已使用"""
+    cards = data.get("checkin_cards", {})
+    return max(0, real_checkin_count(data) // 30 + int(cards.get("bought", 0)) - int(cards.get("used", 0)))
+
+
+def find_repairable_gap(data, max_days=7):
+    """返回最近一个可用补签卡修复的断签日期（YYYY-MM-DD），没有则 None。
+    规则：只补"紧挨当前连续签到链的第一个缺口"（从最近端补起，每补一张连续天数立刻 +1），
+    且该日期须在最近 max_days 天内；从未签到过则不可补。"""
+    today = now_local().date()
+    checkin_set = set(data.get("checkin_log", []))
+    if not checkin_set:
+        return None                     # 从未签到，无可补之说
+    earliest = today - timedelta(days=max_days)
+    # 从存活链顶端（今天或昨天）往回走，第一个没签到的日子就是补签目标
+    d = today if today.strftime("%Y-%m-%d") in checkin_set else today - timedelta(days=1)
+    while d >= earliest and d.strftime("%Y-%m-%d") in checkin_set:
+        d -= timedelta(days=1)
+    if d < earliest:
+        return None                     # 连续签到一直延伸到窗口外，没有缺口
+    ds = d.strftime("%Y-%m-%d")
+    return None if ds in checkin_set else ds
+
+
+# ---------- 称号系统 ----------
+TITLE_DEFS = [
+    # (最低总等级, 称号)  总等级 = total_earned // 100
+    (0,  "🌱 新手冒险者"),
+    (3,  "⚡ 行动派"),
+    (8,  "🔥 自律学徒"),
+    (15, "🛡️ 坚持者"),
+    (25, "🌟 节奏大师"),
+    (40, "👑 生活大师"),
+    (60, "💎 传奇玩家"),
+]
+ATTR_TITLES = {
+    "Productivity": "⚡ 效率先锋",
+    "Creativity":   "💡 创造者",
+    "Willpower":    "🔥 意志坚定者",
+    "Vitality":     "💚 活力满满",
+}
+
+
+def get_titles(data):
+    """返回 (主称号, 属性称号)。主称号看总等级，属性称号看最高属性。"""
+    lv = data.get("total_earned", 0) // 100
+    main = TITLE_DEFS[0][1]
+    for min_lv, t in TITLE_DEFS:
+        if lv >= min_lv:
+            main = t
+    stats = {k: v for k, v in data.get("stats", {}).items() if isinstance(v, (int, float))}
+    attr_title = ATTR_TITLES.get(max(stats, key=stats.get)) if stats else None
+    return main, attr_title
+
+
 # ---------- 周报 / 月报生成 ----------
 def _get_daily_map(data):
     """从 action_log + resistance_log 构建每日聚合字典"""
@@ -794,6 +860,9 @@ def new_data():
         "saved_at": "",         # 最后一次保存时间
         "reports": [],          # 周报/月报存档
         "checkin_log": [],      # 每日签到日期记录 ["YYYY-MM-DD", ...]
+        "checkin_cards": {"bought": 0, "used": 0, "earned_seen": 0},  # 补签卡：已购/已用/已结算的赠送进度
+        "repaired_checkins": [],   # 用补签卡补上的日期（不计送卡进度、不补发当日积分）
+        "card_log": [],        # 补签卡 获赠/购买/使用 流水
         "achievements": [
             {**a, "unlocked": False, "unlocked_time": None}
             for a in ACHIEVEMENT_DEFS
@@ -954,6 +1023,11 @@ def _migrate_data(data):
     # 给旧记录补唯一 ID（云存档合并去重用）
     for key in ("action_log", "resistance_log", "redemption_log"):
         _ensure_ids(data.get(key, []))
+    # 补签卡：按历史真实签到数折算赠送进度（静默，老用户登录即直接持有应得的卡）
+    _cards = data.setdefault("checkin_cards", {"bought": 0, "used": 0, "earned_seen": 0})
+    _derived_cards = real_checkin_count(data) // 30
+    if int(_cards.get("earned_seen", 0)) < _derived_cards:
+        _cards["earned_seen"] = _derived_cards
     # 兼容旧版：去掉旧的 claimed 字段
     for r in data.get("rewards", []):
         r.pop("claimed", None)
@@ -1485,12 +1559,16 @@ with st.sidebar:
     # 侧边栏总等级简要显示
     _sb_total = data.get("total_earned", 0)
     _sb_lv = _sb_total // 100
+    _sb_title, _sb_attr_title = get_titles(data)
     st.markdown(
         f'<div style="display: flex; justify-content: space-between; align-items: center; '
         f'padding: 8px 12px; border-radius: 8px; margin-bottom: 4px;'
         f'background: rgba(96,165,250,0.08); border: 1px solid rgba(96,165,250,0.2);">'
         f'<span style="font-size: 0.8rem; opacity: 0.6;">总等级</span>'
         f'<span style="font-size: 1.3rem; font-weight: 800;">Lv.{_sb_lv}</span>'
+        f'</div>'
+        f'<div style="text-align: center; font-size: 0.8rem; opacity: 0.8; margin-bottom: 2px;">'
+        + _sb_title + (f' · {_sb_attr_title}' if _sb_attr_title else '') +
         f'</div>',
         unsafe_allow_html=True,
     )
@@ -1549,10 +1627,20 @@ with st.sidebar:
             _new_streak = get_checkin_streak(data)
             _reward = get_checkin_reward(_new_streak)
             add_points(data, "", _reward, f"📅 每日签到（连续{_new_streak}天）", source=SOURCE_CHECKIN)
+            _flash = f"✅ 签到成功！连续 {_new_streak} 天，+{_reward} pts"
+            # 累计真实签到每满 30 天送一张补签卡
+            _cards = data.setdefault("checkin_cards", {"bought": 0, "used": 0, "earned_seen": 0})
+            _derived_cards = real_checkin_count(data) // 30
+            if _derived_cards > int(_cards.get("earned_seen", 0)):
+                _n_cards = _derived_cards - int(_cards.get("earned_seen", 0))
+                _cards["earned_seen"] = _derived_cards
+                data.setdefault("card_log", []).append(
+                    {"time": now_str(), "action": "earn", "detail": f"累计签到满 {_derived_cards * 30} 天"}
+                )
+                _flash += f"\n\n🎁 累计签到满 {_derived_cards * 30} 天，赠送补签卡 ×{_n_cards}！"
             newly = check_achievements(data)
             save_data(data)
             st.session_state.data = data
-            _flash = f"✅ 签到成功！连续 {_new_streak} 天，+{_reward} pts"
             if newly:
                 _ach_names = "、".join(a["name"] for a in newly)
                 _flash += f"\n\n🏅 成就解锁：{_ach_names}"
@@ -1562,6 +1650,47 @@ with st.sidebar:
         st.caption(f"当前连续签到 {_checkin_streak} 天，别断了！")
     elif _checkin_streak >= 5:
         st.caption(f"🔥 已连续签到 {_checkin_streak} 天，每天 +5 pts！")
+
+    # ---- 补签卡 ----
+    _cards = data.get("checkin_cards", {})
+    _avail_cards = available_checkin_cards(data)
+    _real_checkins = real_checkin_count(data)
+    _next_card_at = (_real_checkins // 30 + 1) * 30
+    st.caption(
+        f"🎫 补签卡 ×{_avail_cards} · 累计真实签到 {_real_checkins} 天，"
+        f"满 {_next_card_at} 天再送 1 张（也可用积分购买）"
+    )
+    _spendable = data.get("total_earned", 0) - sum(r.get("cost", 0) for r in data.get("redemption_log", []))
+    if st.button("🛒 购买补签卡（100 pts）", disabled=(_spendable < 100), use_container_width=True):
+        data["redemption_log"].append({
+            "id": new_entry_id(), "time": now_str(),
+            "reward_name": "🎫 补签卡", "cost": 100,
+        })
+        data.setdefault("checkin_cards", {})["bought"] = int(_cards.get("bought", 0)) + 1
+        data.setdefault("card_log", []).append({"time": now_str(), "action": "buy", "detail": "100 pts"})
+        newly = check_achievements(data)
+        save_data(data)
+        st.session_state.data = data
+        flash_success("🎫 已购买补签卡 ×1（-100 pts）", icon="🎫", position="checkin", balloons=bool(newly))
+        st.rerun()
+
+    _repair_gap = find_repairable_gap(data)
+    if _repair_gap:
+        if st.button(f"🎫 补签 {_repair_gap}（用 1 张卡）", disabled=(_avail_cards < 1), use_container_width=True):
+            data.setdefault("checkin_log", []).append(_repair_gap)
+            data.setdefault("repaired_checkins", []).append(_repair_gap)
+            data.setdefault("checkin_cards", {})["used"] = int(_cards.get("used", 0)) + 1
+            data.setdefault("card_log", []).append({"time": now_str(), "action": "use", "detail": _repair_gap})
+            newly = check_achievements(data)
+            save_data(data)
+            st.session_state.data = data
+            _flash = f"✅ 已补签 {_repair_gap}，连续签到恢复为 {get_checkin_streak(data)} 天"
+            if newly:
+                _flash += "\n\n🏅 成就解锁：" + "、".join(a["name"] for a in newly)
+            flash_success(_flash, icon="🎫", position="checkin", balloons=bool(newly))
+            st.rerun()
+    elif _avail_cards > 0:
+        st.caption("当前没有可修复的断签（只能补最近 7 天内的缺口）")
 
 # --- 主题切换 ---
     st.markdown("---")
@@ -2382,6 +2511,54 @@ with tab5:
 
     st.markdown("---")
 
+    # ---- 属性雷达图（本月 vs 上月） ----
+    st.markdown("#### 🕸️ 属性雷达（本月 vs 上月）")
+    st.caption("形状越饱满说明四维越均衡。虚线是上月的形状，对比可见变化。")
+
+    def _month_attr_sum(prefix):
+        vals = {"Productivity": 0, "Creativity": 0, "Willpower": 0, "Vitality": 0}
+        for ds, dd in daily.items():
+            if ds[:7] == prefix:
+                for k in vals:
+                    vals[k] += dd.get(k, 0)
+        return vals
+
+    _this_m = today_date.strftime("%Y-%m")
+    _last_m = (today_date.replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
+    _mv_this = _month_attr_sum(_this_m)
+    _mv_last = _month_attr_sum(_last_m)
+
+    if sum(_mv_this.values()) > 0 or sum(_mv_last.values()) > 0:
+        _attr_keys = ["Productivity", "Creativity", "Willpower", "Vitality"]
+        _radar_labels = ["⚡ 生产力", "💡 创造力", "🔥 意志力", "💚 精力"]
+        fig_radar = go.Figure()
+        if sum(_mv_last.values()) > 0:
+            fig_radar.add_trace(go.Scatterpolar(
+                r=[_mv_last[k] for k in _attr_keys],
+                theta=_radar_labels,
+                fill="toself",
+                name=f"上月（{_last_m}）",
+                line=dict(dash="dash"),
+                opacity=0.45,
+            ))
+        fig_radar.add_trace(go.Scatterpolar(
+            r=[_mv_this[k] for k in _attr_keys],
+            theta=_radar_labels,
+            fill="toself",
+            name=f"本月（{_this_m}）",
+        ))
+        fig_radar.update_layout(
+            polar=dict(radialaxis=dict(showticklabels=False)),
+            height=360,
+            margin=dict(t=50, b=20, l=50, r=50),
+            legend=dict(orientation="h", yanchor="bottom", y=1.05),
+        )
+        st.plotly_chart(fig_radar, use_container_width=True)
+    else:
+        st.info("本月和上月还没有属性数据。")
+
+    st.markdown("---")
+
     # ---- 每日加分柱状图 ----
     st.markdown("#### 📊 每日加分（近 14 天）")
 
@@ -2574,6 +2751,65 @@ with tab5:
             )
     else:
         st.info("还没有心情数据。记录任务时选择心情后，这里会显示分析。")
+
+    # ---- 心情趋势线 ----
+    st.markdown("---")
+    st.markdown("#### 💗 心情趋势（近 30 天）")
+    st.caption("每天心情的平均值（😴1 → 🚀5），橙线是最近 7 个有记录日子的滑动平均。")
+
+    _mood_score = {"😴": 1, "😐": 2, "🙂": 3, "😄": 4, "🚀": 5}
+    _day_mood = {}
+    for entry in data.get("action_log", []):
+        if entry.get("source", SOURCE_TASK) in (SOURCE_ACH, SOURCE_CHECKIN):
+            continue
+        m = entry.get("mood")
+        if m not in _mood_score:
+            continue
+        ds = entry.get("time", "")[:10]
+        _day_mood.setdefault(ds, []).append(_mood_score[m])
+
+    _t_dates = [(today_date - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(29, -1, -1)]
+    _t_vals = [round(sum(_day_mood[d]) / len(_day_mood[d]), 2) if _day_mood.get(d) else None for d in _t_dates]
+    _have_days = sum(1 for v in _t_vals if v is not None)
+
+    if _have_days >= 3:
+        # 滑动平均基于有记录的日子（不是日历日），贴回对应日期
+        _window = [v for v in _t_vals if v is not None]
+        _roll_vals = [
+            round(sum(_window[max(0, i - 6):i + 1]) / len(_window[max(0, i - 6):i + 1]), 2)
+            for i in range(len(_window))
+        ]
+        _roll_iter = iter(_roll_vals)
+        _t_roll = [next(_roll_iter) if v is not None else None for v in _t_vals]
+
+        fig_mood_trend = go.Figure()
+        fig_mood_trend.add_trace(go.Scatter(
+            x=[d[5:] for d in _t_dates], y=_t_vals, name="当日心情均值",
+            mode="lines+markers",
+            line=dict(color="#7fc5ca", width=1.5),
+            marker=dict(size=5),
+            connectgaps=False,
+        ))
+        fig_mood_trend.add_trace(go.Scatter(
+            x=[d[5:] for d in _t_dates], y=_t_roll, name="滑动平均",
+            mode="lines",
+            line=dict(color="#ffa94d", width=3),
+            connectgaps=False,
+        ))
+        fig_mood_trend.update_layout(
+            height=280,
+            margin=dict(t=10, b=30, l=40, r=10),
+            yaxis=dict(
+                range=[0.5, 5.5],
+                tickvals=[1, 2, 3, 4, 5],
+                ticktext=["😴", "😐", "🙂", "😄", "🚀"],
+            ),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02),
+            xaxis=dict(type="category"),
+        )
+        st.plotly_chart(fig_mood_trend, use_container_width=True)
+    else:
+        st.info(f"近 30 天只有 {_have_days} 天有心情记录，多记几天后就能看到趋势线。")
 
 
 # ════════ Tab 7：设置 ════════
@@ -2862,7 +3098,8 @@ with stats_placeholder:
         st.caption(f"距 Lv.{_total_lv + 1} 还需 {_lv_remaining} pts · 累计 {_total_earned} pts")
 
     st.markdown("---")
-    st.markdown("## ⚔️ 属性面板")
+    _panel_main, _panel_attr = get_titles(data)
+    st.markdown("## ⚔️ 属性面板 · " + _panel_main + (f"（{_panel_attr}）" if _panel_attr else ""))
 
     _attr_display = [
         ("⚡ 生产力", "Productivity", "工作产出 · 任务完成 · 效率"),
