@@ -1,7 +1,7 @@
 """
 ╔══════════════════════════════════════════╗
 ║     🎮  Life-RPG  网页版                 ║
-║     云存档 · 密码保护 · 手机可用          ║
+║     Supabase 云存档 · 账号登录 · 手机可用  ║
 ╚══════════════════════════════════════════╝
 """
 
@@ -15,14 +15,23 @@ from uuid import uuid4
 import plotly.graph_objects as go
 from datetime import datetime
 
+try:
+    from supabase import create_client as _sb_create_client
+except ImportError:
+    _sb_create_client = None
+
 
 # ═══════════════════════════════════════════════════
-#  ⚙️ 配置区 —— 必须修改以下 3 项
+#  ⚙️ 配置区 —— 必须修改以下 2 项
 # ═══════════════════════════════════════════════════
 
-APP_PASSWORD     = ""       # 🔐 你的登录密码
+SUPABASE_URL     = ""       # 🔗 Supabase 项目 URL（与清单程序相同）
+SUPABASE_ANON_KEY = ""      # 🔑 Supabase 可发布密钥（与清单程序相同）
+
+# —— 旧存档迁移用（JSONBin → Supabase 首次登录时自动迁移，迁移成功后可删）——
 JSONBIN_API_KEY  = ""                # 🔑 JSONBin API Key
 JSONBIN_BIN_ID   = ""                # 📦 JSONBin Bin ID
+
 TIMEZONE_OFFSET = 8
 
 # ═══════════════════════════════════════════════════
@@ -807,12 +816,13 @@ def get_secret(key, fallback):
     except Exception:
         return fallback
 
-PASSWORD = get_secret("PASSWORD", APP_PASSWORD)
-API_KEY  = get_secret("JSONBIN_API_KEY", JSONBIN_API_KEY)
-BIN_ID   = get_secret("JSONBIN_BIN_ID", JSONBIN_BIN_ID)
+SB_URL        = get_secret("SUPABASE_URL", SUPABASE_URL)
+SB_KEY        = get_secret("SUPABASE_ANON_KEY", SUPABASE_ANON_KEY)
+JSONBIN_KEY   = get_secret("JSONBIN_API_KEY", JSONBIN_API_KEY)
+JSONBIN_BIN   = get_secret("JSONBIN_BIN_ID", JSONBIN_BIN_ID)
 
 # ---------- Session State 初始化 ----------
-for k, v in {"authed": False, "data": None, "theme": "🌌 莫兰迪蓝"}.items():
+for k, v in {"authed": False, "data": None, "theme": "🌌 莫兰迪蓝", "uid": None, "user_email": ""}.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
@@ -878,18 +888,101 @@ def new_data():
 
 
 
-# ---------- 云存档 ----------
+# ---------- 云存档（Supabase） ----------
 LOCAL_FILE = "life_rpg_save.json"
-SIZE_WARN_BYTES = 80 * 1024   # JSONBin 免费版单 bin 上限 100KB，到 80KB 起提醒
+SB_TABLE = "life_rpg_data"
+
+
+@st.cache_resource
+def get_sb_client():
+    """全局缓存的 Supabase 客户端（rerun 不重建，auth session 存于其中）"""
+    if _sb_create_client is None or not SB_URL or not SB_KEY:
+        return None
+    try:
+        return _sb_create_client(SB_URL, SB_KEY)
+    except Exception as e:
+        print(f"[supabase init] {e!r}")
+        return None
+
+
+def _sb_refresh_auth():
+    """token 失效时：先试 refresh，失败再用 session 内凭据静默重登"""
+    sb = get_sb_client()
+    if sb is None:
+        return False
+    try:
+        sb.auth.refresh_session()
+        return True
+    except Exception:
+        email = st.session_state.get("login_email")
+        pwd = st.session_state.get("login_password")
+        if not email or not pwd:
+            return False
+        try:
+            sb.auth.sign_in_with_password({"email": email, "password": pwd})
+            return True
+        except Exception as e:
+            print(f"[supabase re-auth] {e!r}")
+            return False
+
+
+def _sb_is_auth_error(e):
+    s = str(e).lower()
+    return any(k in s for k in ("401", "403", "jwt", "token", "unauthorized", "invalid api key"))
 
 
 def cloud_load():
-    if not API_KEY or not BIN_ID:
+    """读取 Supabase 上当前用户的存档（行不存在返回 None）"""
+    sb = get_sb_client()
+    uid = st.session_state.get("uid")
+    if sb is None or not uid:
+        return None
+    for attempt in range(2):
+        try:
+            r = sb.table(SB_TABLE).select("data").eq("id", uid).single().execute()
+            d = r.data.get("data") if isinstance(r.data, dict) else None
+            return d if isinstance(d, dict) else None
+        except Exception as e:
+            if "PGRST116" in (getattr(e, "code", "") or "") or "PGRST116" in str(e):
+                return None  # 行不存在：云端还没有存档
+            if attempt == 0 and _sb_is_auth_error(e) and _sb_refresh_auth():
+                continue  # token 过期：刷新后重试一次
+            print(f"[cloud_load] {e!r}")
+            return None
+    return None
+
+
+def cloud_save(data):
+    """把整份存档 upsert 到 Supabase 当前用户的行"""
+    sb = get_sb_client()
+    uid = st.session_state.get("uid")
+    if sb is None or not uid:
+        return False
+    payload = {
+        "id": uid,
+        "data": data,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    for attempt in range(2):
+        try:
+            sb.table(SB_TABLE).upsert(payload, on_conflict="id").execute()
+            return True
+        except Exception as e:
+            if attempt == 0 and _sb_is_auth_error(e) and _sb_refresh_auth():
+                continue
+            print(f"[cloud_save] {e!r}")
+            return False
+    return False
+
+
+def jsonbin_load():
+    """一次性迁移：从旧 JSONBin 存档拉取（仅 Supabase 无数据时调用）"""
+    if not JSONBIN_KEY or not JSONBIN_BIN:
         return None
     try:
         r = requests.get(
-            "https://api.jsonbin.io/v3/b/" + BIN_ID + "/latest",
-            headers={"X-Master-Key": API_KEY},
+            "https://api.jsonbin.io/v3/b/" + JSONBIN_BIN + "/latest",
+            headers={"X-Master-Key": JSONBIN_KEY},
             timeout=10,
         )
         if r.status_code == 200:
@@ -897,28 +990,10 @@ def cloud_load():
             if isinstance(record, dict):
                 return record
         else:
-            print(f"[cloud_load] HTTP {r.status_code}: {r.text[:200]}")
+            print(f"[jsonbin_load] HTTP {r.status_code}: {r.text[:200]}")
     except Exception as e:
-        print(f"[cloud_load] {e!r}")
+        print(f"[jsonbin_load] {e!r}")
     return None
-
-
-def cloud_save(data):
-    if not API_KEY or not BIN_ID:
-        return False
-    try:
-        r = requests.put(
-            "https://api.jsonbin.io/v3/b/" + BIN_ID,
-            headers={"X-Master-Key": API_KEY, "Content-Type": "application/json"},
-            json=data,
-            timeout=10,
-        )
-        if r.status_code == 200:
-            return True
-        print(f"[cloud_save] HTTP {r.status_code}: {r.text[:200]}")
-    except Exception as e:
-        print(f"[cloud_save] {e!r}")
-    return False
 
 
 def local_load():
@@ -1057,14 +1132,23 @@ def _migrate_data(data):
 
 def load_data():
     cloud = cloud_load()
+    sb_row_missing = cloud is None
     local = local_load()
     push_needed = False
+    if cloud is None:
+        # Supabase 首次使用：从旧 JSONBin 存档一次性迁移（之后不再读 JSONBin）
+        jb = jsonbin_load()
+        if jb:
+            cloud = jb
     if cloud and local:
         # 云端、本地都存在：按记录 ID 做并集合并，谁都不丢
         data, cloud_new, local_new = merge_data(local, cloud)
         push_needed = cloud_new > 0 or local_new > 0
     else:
         data = cloud or local or new_data()
+    if sb_row_missing:
+        # Supabase 上还没有这一行（首次使用/迁移）：无论数据来自哪里，都推上去建行
+        push_needed = True
     before = json.dumps(data, sort_keys=True, ensure_ascii=False)
     data = _migrate_data(data)
     after = json.dumps(data, sort_keys=True, ensure_ascii=False)
@@ -1080,19 +1164,11 @@ def save_data(data):
     local_ok = local_save(data)
     if cloud_ok:
         st.session_state["cloud_dirty"] = False
-    elif API_KEY and BIN_ID:
+    elif get_sb_client() is not None and st.session_state.get("uid"):
         st.session_state["cloud_dirty"] = True
         st.toast("☁️ 云端保存失败，已保存到本地，下次操作会自动重试", icon="⚠️")
     if not local_ok:
         st.toast("⚠️ 本地保存也失败了，请检查磁盘空间", icon="🚨")
-    # 体积接近 JSONBin 免费版 100KB 上限时提醒一次
-    try:
-        size = len(json.dumps(data, ensure_ascii=False).encode("utf-8"))
-    except Exception:
-        size = 0
-    if size > SIZE_WARN_BYTES and not st.session_state.get("size_warned"):
-        st.session_state["size_warned"] = True
-        st.toast(f"📏 存档已 {size // 1024} KB，接近 JSONBin 免费版 100KB 上限，请尽快导出备份", icon="⚠️")
     return cloud_ok and local_ok
 
 # ---------- 自定义样式 ----------
@@ -1414,31 +1490,55 @@ if not st.session_state.authed:
             """
             <div style="text-align: center; padding: 20px 0;">
                 <h1 style="font-size: 3rem; margin-bottom: 4px;">🎮 Life-RPG</h1>
-                <p style="font-size: 1.1rem; opacity: 0.6;">个人经验值管理系统 · 云存档</p>
+                <p style="font-size: 1.1rem; opacity: 0.6;">个人经验值管理系统 · Supabase 云存档</p>
             </div>
             """,
             unsafe_allow_html=True,
         )
         st.markdown("<br>", unsafe_allow_html=True)
-        if not PASSWORD:
-            st.error("⚠️ 未配置登录密码：请在文件顶部 APP_PASSWORD 或 Streamlit Secrets 的 PASSWORD 中设置")
+        if _sb_create_client is None:
+            st.error("⚠️ 未安装 supabase 库：请在运行环境执行 `pip install supabase`")
             st.stop()
-        pwd = st.text_input("🔑 输入密码", type="password", key="login_pwd")
+        if not SB_URL or not SB_KEY:
+            st.error("⚠️ 未配置 Supabase：请在文件顶部 SUPABASE_URL / SUPABASE_ANON_KEY 或 Streamlit Secrets 中填写（与清单程序相同的 URL 和可发布密钥）")
+            st.stop()
+        email = st.text_input("📧 邮箱", key="login_email")
+        pwd = st.text_input("🔑 密码", type="password", key="login_pwd")
         if st.button("⚔️ 进入系统", use_container_width=True):
-            if pwd == PASSWORD:
-                with st.spinner("读取存档中..."):
-                    try:
-                        _loaded = load_data()
-                        if not isinstance(_loaded, dict):
-                            _loaded = new_data()
-                    except Exception as e:
-                        st.error(f"⚠️ 存档读取失败，已使用新存档：{e}")
-                        _loaded = new_data()
-                st.session_state.authed = True
-                st.session_state.data = _loaded
-                st.rerun()
+            sb = get_sb_client()
+            if sb is None:
+                st.error("❌ Supabase 初始化失败，请检查 URL / Key 配置")
             else:
-                st.error("❌ 密码错误")
+                _login_ok = False
+                try:
+                    with st.spinner("登录中..."):
+                        resp = sb.auth.sign_in_with_password(
+                            {"email": email.strip(), "password": pwd}
+                        )
+                    if resp.user is not None:
+                        st.session_state["uid"] = resp.user.id
+                        st.session_state["user_email"] = resp.user.email or email.strip()
+                        st.session_state["login_email"] = email.strip()
+                        st.session_state["login_password"] = pwd
+                        _login_ok = True
+                except Exception as e:
+                    _s = str(e).lower()
+                    if "invalid login" in _s or "email not confirmed" in _s or "password" in _s or "401" in _s:
+                        st.error("❌ 邮箱或密码错误（账号与清单程序相同）")
+                    else:
+                        st.error(f"❌ 登录失败（网络/服务异常）：{e}")
+                if _login_ok:
+                    with st.spinner("读取存档中..."):
+                        try:
+                            _loaded = load_data()
+                            if not isinstance(_loaded, dict):
+                                _loaded = new_data()
+                        except Exception as e:
+                            st.error(f"⚠️ 存档读取失败，已使用新存档：{e}")
+                            _loaded = new_data()
+                    st.session_state.authed = True
+                    st.session_state.data = _loaded
+                    st.rerun()
     st.stop()
 
 # ---------- 登录后移动端布局修复 ----------
@@ -1575,9 +1675,11 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("**存档状态**")
-    if API_KEY and BIN_ID:
-        st.success("☁️ 云存档已连接")
-        st.caption("Bin: ..." + BIN_ID[-6:])
+    if get_sb_client() is not None and st.session_state.get("uid"):
+        st.success("☁️ Supabase 云存档已连接")
+        _email_sb = st.session_state.get("user_email", "")
+        if _email_sb:
+            st.caption(f"账号：{_email_sb}")
         _saved_at = data.get("saved_at", "")
         if _saved_at:
             st.caption(f"上次保存：{_saved_at} · v{data.get('rev', 0)}")
@@ -1607,7 +1709,7 @@ with st.sidebar:
                     st.error("⚠️ 同步失败，请检查网络后重试")
     else:
         st.warning("💾 仅本地存档")
-        st.caption("配置 JSONBin 后可手机同步")
+        st.caption("Supabase 云端未连接（请检查配置）")
 
     # ---- 每日签到 ----
     st.markdown("---")
@@ -1708,10 +1810,27 @@ with st.sidebar:
     )
     
     st.markdown("---")
+    _email = st.session_state.get("user_email", "")
+    if _email:
+        st.caption(f"👤 已登录：{_email}")
     if st.button("💾 保存并退出", use_container_width=True):
         save_data(data)
         st.session_state.authed = False
         st.session_state.data = None
+        st.rerun()
+    if st.button("🚪 退出账号", use_container_width=True):
+        save_data(data)
+        sb = get_sb_client()
+        if sb is not None:
+            try:
+                sb.auth.sign_out()
+            except Exception as e:
+                print(f"[sign_out] {e!r}")
+        st.session_state.authed = False
+        st.session_state.data = None
+        st.session_state["uid"] = None
+        st.session_state.pop("login_email", None)
+        st.session_state.pop("login_password", None)
         st.rerun()
 
 # -------- 属性面板（占位：实际渲染在文件末尾，确保即时刷新）--------
