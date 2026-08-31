@@ -1410,15 +1410,13 @@ h4, h5, h6 { color: [tx_s] !important; }
     transform: translateY(-1px);
 }
 
-/* 称号徽章（属性面板标题下方） */
+/* 称号徽章（属性面板标题下方，扁平化：纯色无渐变无投影） */
 .title-badge-main {
     display: inline-block;
     padding: 0.25rem 0.9rem;
     margin: 0.15rem 0.5rem 0.15rem 0;
     border-radius: 999px;
-    background: linear-gradient(135deg, [p1], [p2]);
-    border: 1px solid [ac_d];
-    box-shadow: 0 3px 0 [ac_d];
+    background-color: [p1];
     font-size: 1.05rem;
     font-weight: 600;
 }
@@ -1430,7 +1428,6 @@ h4, h5, h6 { color: [tx_s] !important; }
     border-radius: 999px;
     background-color: [card];
     border: 1px solid [bd];
-    box-shadow: 0 2px 8px [sh];
     font-size: 1rem;
     font-weight: 500;
 }
