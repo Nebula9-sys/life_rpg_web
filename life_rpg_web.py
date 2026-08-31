@@ -1409,6 +1409,32 @@ h4, h5, h6 { color: [tx_s] !important; }
     box-shadow: 0 4px 14px [sh];
     transform: translateY(-1px);
 }
+
+/* 称号徽章（属性面板标题下方） */
+.title-badge-main {
+    display: inline-block;
+    padding: 0.25rem 0.9rem;
+    margin: 0.15rem 0.5rem 0.15rem 0;
+    border-radius: 999px;
+    background: linear-gradient(135deg, [p1], [p2]);
+    border: 1px solid [ac_d];
+    box-shadow: 0 3px 0 [ac_d];
+    font-size: 1.05rem;
+    font-weight: 600;
+}
+.stMarkdown .title-badge-main { color: [tx_h] !important; }
+.title-badge-sub {
+    display: inline-block;
+    padding: 0.25rem 0.9rem;
+    margin: 0.15rem 0.5rem 0.15rem 0;
+    border-radius: 999px;
+    background-color: [card];
+    border: 1px solid [bd];
+    box-shadow: 0 2px 8px [sh];
+    font-size: 1rem;
+    font-weight: 500;
+}
+.stMarkdown .title-badge-sub { color: [tx_s] !important; }
 [data-testid="stNumberInput"] input {
     background-color: [inp];
     color: [tx_m] !important;
@@ -1458,6 +1484,11 @@ code {
     .stButton > button {
         padding: 0.4rem 0.8rem !important;
         font-size: 0.9rem !important;
+    }
+    /* 称号徽章小一点 */
+    .title-badge-main, .title-badge-sub {
+        font-size: 0.88rem !important;
+        padding: 0.18rem 0.7rem !important;
     }
     /* 表格缩小 */
     .stTable {
@@ -3223,8 +3254,12 @@ with stats_placeholder:
         st.caption(f"距 Lv.{_total_lv + 1} 还需 {_lv_remaining} pts · 累计 {_total_earned} pts")
 
     st.markdown("---")
+    st.markdown("## ⚔️ 属性面板")
     _panel_main, _panel_attr = get_titles(data)
-    st.markdown("## ⚔️ 属性面板 · " + _panel_main + (f"（{_panel_attr}）" if _panel_attr else ""))
+    _badges_html = f'<span class="title-badge-main">{_panel_main}</span>'
+    if _panel_attr:
+        _badges_html += f' <span class="title-badge-sub">{_panel_attr}</span>'
+    st.markdown(_badges_html, unsafe_allow_html=True)
 
     _attr_display = [
         ("⚡ 生产力", "Productivity", "工作产出 · 任务完成 · 效率"),
