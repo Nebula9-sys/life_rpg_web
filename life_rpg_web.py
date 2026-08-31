@@ -10,6 +10,8 @@ import requests
 import json
 import os
 import random
+import hashlib
+from uuid import uuid4
 import plotly.graph_objects as go
 from datetime import datetime
 
@@ -117,17 +119,22 @@ def encouragement_for(attr_key):
     return random.choice(messages.get(attr_key, ["✨ 你又向前走了一点。"]))
 
 
-def flash_success(message, icon="✅", position="top"):
+def flash_success(message, icon="✅", position="top", balloons=False):
     """暂存成功消息，rerun 后在指定位置显示。position: top/record/checkin/redeem/settings"""
-    st.session_state["flash_msg"] = {"type": "success", "message": message, "icon": icon, "position": position}
+    st.session_state["flash_msg"] = {
+        "type": "success", "message": message, "icon": icon,
+        "position": position, "balloons": balloons,
+    }
 
 
 def show_flash_message(position="top"):
-    """在指定位置显示暂存的消息（显示后自动清除）"""
+    """在指定位置显示暂存的消息（显示后自动清除；balloons 也在此时触发，避免被 rerun 冲掉）"""
     flash = st.session_state.get("flash_msg")
     if not flash or flash.get("position", "top") != position:
         return
     st.session_state.pop("flash_msg", None)
+    if flash.get("balloons"):
+        st.balloons()
     if flash["type"] == "success":
         st.success(flash["message"], icon=flash.get("icon", "✅"))
     elif flash["type"] == "info":
@@ -135,6 +142,94 @@ def show_flash_message(position="top"):
 
 
 VALID_ATTRS = {"Productivity", "Creativity", "Willpower", "Vitality"}
+
+# ---------- 记录来源常量（字符串值与旧存档保持一致） ----------
+SOURCE_TASK    = "任务"
+SOURCE_ACH     = "成就"
+SOURCE_CHECKIN = "签到"
+
+
+def calc_streak(date_set, today=None):
+    """从今天（或昨天）往回数连续出现在 date_set 中的天数"""
+    today = today or now_local().date()
+    check = today
+    if today.strftime("%Y-%m-%d") not in date_set:
+        check = today - timedelta(days=1)
+    streak = 0
+    while True:
+        if check.strftime("%Y-%m-%d") in date_set:
+            streak += 1
+            check -= timedelta(days=1)
+        else:
+            break
+    return streak
+
+
+# ---------- 记录唯一 ID（云存档合并去重用） ----------
+def new_entry_id():
+    return uuid4().hex[:12]
+
+
+def _stable_entry_id(entry):
+    """按内容哈希生成确定性 ID：同一条旧记录在任何设备上算出相同值"""
+    payload = {k: v for k, v in entry.items() if k != "id"}
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    return hashlib.md5(raw).hexdigest()[:12]
+
+
+def _ensure_ids(entries):
+    """给没有 id 的旧记录补 ID；内容完全相同的重复条目按出现次序编号区分"""
+    seen = {}
+    for e in entries:
+        if not isinstance(e, dict) or e.get("id"):
+            continue
+        base = _stable_entry_id(e)
+        n = seen.get(base, 0)
+        seen[base] = n + 1
+        e["id"] = base if n == 0 else f"{base}-{n}"
+
+
+# ---------- 统一加分 / 删除回收 ----------
+def add_points(data, attr_key, points, task, source=SOURCE_TASK, mood=None, backdated=None, time_str=None):
+    """统一加分入口：更新属性/累计积分并写入行为日志，返回新日志条目"""
+    if attr_key in data.get("stats", {}):
+        data["stats"][attr_key] += points
+    data["total_earned"] = data.get("total_earned", 0) + points
+    entry = {
+        "id": new_entry_id(),
+        "time": time_str or now_str(),
+        "task": task,
+        "attribute": attr_key if attr_key in VALID_ATTRS else "",
+        "points": points,
+        "source": source,
+    }
+    if mood is not None:
+        entry["mood"] = mood
+    if backdated is not None:
+        entry["backdated"] = backdated
+    data.setdefault("action_log", []).append(entry)
+    return entry
+
+
+def remove_action_entry(data, idx):
+    """删除一条行为日志并回收属性/积分；签到条目同时移除当天签到记录"""
+    entry = data["action_log"].pop(idx)
+    pts = entry.get("points", 0)
+    attr = entry.get("attribute", "")
+    if attr in data.get("stats", {}):
+        data["stats"][attr] -= pts
+    data["total_earned"] = max(data.get("total_earned", 0) - pts, 0)
+    if entry.get("source", SOURCE_TASK) == SOURCE_CHECKIN:
+        ds = entry.get("time", "")[:10]
+        if ds in data.get("checkin_log", []):
+            data["checkin_log"].remove(ds)
+
+
+def remove_resistance_entry(data, idx):
+    """删除一条阻力复盘并回收意志力/积分"""
+    data["resistance_log"].pop(idx)
+    data["stats"]["Willpower"] = max(data["stats"].get("Willpower", 0) - 1, 0)
+    data["total_earned"] = max(data.get("total_earned", 0) - 1, 0)
 
 
 # ---------- 成就系统 ----------
@@ -223,7 +318,7 @@ def check_achievements(data, retroactive=False):
     active_days = len(daily_set)
 
     today_str = now_local().strftime("%Y-%m-%d")
-    today_actions = [e for e in action_log if e.get("time", "")[:10] == today_str and e.get("source", "任务") not in ("成就", "签到")]
+    today_actions = [e for e in action_log if e.get("time", "")[:10] == today_str and e.get("source", SOURCE_TASK) not in (SOURCE_ACH, SOURCE_CHECKIN)]
     today_resist = [r for r in resistance_log if r.get("time", "")[:10] == today_str]
     today_total = sum(e.get("points", 0) for e in today_actions) + len(today_resist)
     today_attrs = set(e.get("attribute", "") for e in today_actions if e.get("points", 0) > 0)
@@ -232,17 +327,7 @@ def check_achievements(data, retroactive=False):
     all_four = all(a in today_attrs for a in ["Productivity", "Creativity", "Willpower", "Vitality"])
 
     today_date = now_local().date()
-    streak = 0
-    check_date = today_date
-    if today_date.strftime("%Y-%m-%d") not in daily_set:
-        check_date = today_date - timedelta(days=1)
-    while True:
-        ds = check_date.strftime("%Y-%m-%d")
-        if ds in daily_set:
-            streak += 1
-            check_date -= timedelta(days=1)
-        else:
-            break
+    streak = calc_streak(daily_set, today_date)
 
     stat_vals = [v for v in data.get("stats", {}).values() if isinstance(v, (int, float))]
     max_stat = max(stat_vals) if stat_vals else 0
@@ -254,31 +339,11 @@ def check_achievements(data, retroactive=False):
     mood_entries = [e for e in action_log if e.get("mood")]
     mood_count = len(mood_entries)
     mood_dates = set(e.get("time", "")[:10] for e in mood_entries if e.get("time"))
-    mood_streak = 0
-    _md = today_date
-    if today_str not in mood_dates:
-        _md = today_date - timedelta(days=1)
-    while True:
-        _ds = _md.strftime("%Y-%m-%d")
-        if _ds in mood_dates:
-            mood_streak += 1
-            _md -= timedelta(days=1)
-        else:
-            break
+    mood_streak = calc_streak(mood_dates, today_date)
 
     # 阻力复盘连续天数
     resist_dates = set(r.get("time", "")[:10] for r in resistance_log if r.get("time"))
-    resistance_streak = 0
-    _rd = today_date
-    if today_str not in resist_dates:
-        _rd = today_date - timedelta(days=1)
-    while True:
-        _ds = _rd.strftime("%Y-%m-%d")
-        if _ds in resist_dates:
-            resistance_streak += 1
-            _rd -= timedelta(days=1)
-        else:
-            break
+    resistance_streak = calc_streak(resist_dates, today_date)
 
     # 兑换总消耗
     total_consumed = sum(r.get("cost", 0) for r in redemption_log)
@@ -313,7 +378,7 @@ def check_achievements(data, retroactive=False):
     this_week_total = sum(
         e.get("points", 0) for e in action_log
         if e.get("time", "")[:10] >= monday_str
-        and e.get("source", "任务") not in ("成就", "签到")
+        and e.get("source", SOURCE_TASK) not in (SOURCE_ACH, SOURCE_CHECKIN)
     ) + sum(
         1 for r in resistance_log
         if r.get("time", "")[:10] >= monday_str
@@ -360,7 +425,7 @@ def check_achievements(data, retroactive=False):
             "daily_100":         today_total >= 100,
             "daily_balanced":    all_four,
             "daily_5_records":   len(today_actions) + len(today_resist) >= 5,
-            "first_task":        len([e for e in action_log if e.get("source", "任务") not in ("成就", "签到")]) >= 1,
+            "first_task":        len([e for e in action_log if e.get("source", SOURCE_TASK) not in (SOURCE_ACH, SOURCE_CHECKIN)]) >= 1,
             "first_resistance":  len(resistance_log) >= 1,
             "first_redeem":      len(redemption_log) >= 1,
             "first_backdate":    has_backdated,
@@ -421,15 +486,8 @@ def check_achievements(data, retroactive=False):
             if conditions.get(ach["id"], False):
                 ach["unlocked"] = True
                 ach["unlocked_time"] = now_str()
-                data["total_earned"] += ach["bonus"]
-                data["action_log"].append({
-                    "time": now_str(),
-                    "task": "🏅 成就解锁：" + ach["name"],
-                    "attribute": "",
-                    "points": ach["bonus"],
-                    "source": "成就",
-                    "retroactive": retroactive,
-                })
+                entry = add_points(data, "", ach["bonus"], "🏅 成就解锁：" + ach["name"], source=SOURCE_ACH)
+                entry["retroactive"] = retroactive
                 newly_unlocked.append(ach)
                 changed = True
 
@@ -439,24 +497,10 @@ def check_achievements(data, retroactive=False):
 # ---------- 每日签到系统 ----------
 def get_checkin_streak(data):
     """计算签到连续天数（从今天或昨天往回数）"""
-    checkin_log = data.get("checkin_log", [])
-    if not checkin_log:
+    checkin_set = set(data.get("checkin_log", []))
+    if not checkin_set:
         return 0
-    checkin_set = set(checkin_log)
-    today = now_local().date()
-    if today.strftime("%Y-%m-%d") in checkin_set:
-        check_date = today
-    else:
-        check_date = today - timedelta(days=1)
-    streak = 0
-    while True:
-        ds = check_date.strftime("%Y-%m-%d")
-        if ds in checkin_set:
-            streak += 1
-            check_date -= timedelta(days=1)
-        else:
-            break
-    return streak
+    return calc_streak(checkin_set)
 
 
 def get_checkin_reward(streak):
@@ -746,6 +790,8 @@ def new_data():
         ],
         "redemption_log": [],   # 兑换历史
         "total_earned": 0,
+        "rev": 0,               # 存档版本号（每次保存 +1）
+        "saved_at": "",         # 最后一次保存时间
         "reports": [],          # 周报/月报存档
         "checkin_log": [],      # 每日签到日期记录 ["YYYY-MM-DD", ...]
         "achievements": [
@@ -765,6 +811,7 @@ def new_data():
 
 # ---------- 云存档 ----------
 LOCAL_FILE = "life_rpg_save.json"
+SIZE_WARN_BYTES = 80 * 1024   # JSONBin 免费版单 bin 上限 100KB，到 80KB 起提醒
 
 
 def cloud_load():
@@ -780,8 +827,10 @@ def cloud_load():
             record = r.json().get("record")
             if isinstance(record, dict):
                 return record
-    except Exception:
-        pass
+        else:
+            print(f"[cloud_load] HTTP {r.status_code}: {r.text[:200]}")
+    except Exception as e:
+        print(f"[cloud_load] {e!r}")
     return None
 
 
@@ -795,9 +844,12 @@ def cloud_save(data):
             json=data,
             timeout=10,
         )
-        return r.status_code == 200
-    except Exception:
-        return False
+        if r.status_code == 200:
+            return True
+        print(f"[cloud_save] HTTP {r.status_code}: {r.text[:200]}")
+    except Exception as e:
+        print(f"[cloud_save] {e!r}")
+    return False
 
 
 def local_load():
@@ -807,8 +859,8 @@ def local_load():
                 data = json.load(f)
                 if isinstance(data, dict):
                     return data
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[local_load] {e!r}")
     return None
 
 
@@ -824,6 +876,70 @@ def local_save(data):
         return False
 
 
+def _merge_entries_by_id(local_list, remote_list):
+    """两个日志列表按 id 取并集（local 优先），按时间稳定排序"""
+    merged = {}
+    for e in local_list + remote_list:
+        eid = e.get("id") or _stable_entry_id(e)
+        if eid not in merged:
+            merged[eid] = {**e, "id": eid}
+    return sorted(merged.values(), key=lambda x: x.get("time", ""))
+
+
+def _merge_by_name(local_list, remote_list):
+    """奖励/快捷按钮按名称取并集，local 已有的保留"""
+    merged = list(local_list)
+    names = {r.get("name") for r in merged}
+    for r in remote_list:
+        if r.get("name") not in names:
+            merged.append(r)
+            names.add(r.get("name"))
+    return merged
+
+
+def _merge_reports(local_list, remote_list):
+    """报告按 类型+周期 去重，保留 generated_time 较新的"""
+    merged = {f"{r.get('type')}|{r.get('period_key')}": r for r in local_list}
+    for r in remote_list:
+        k = f"{r.get('type')}|{r.get('period_key')}"
+        if k not in merged or str(r.get("generated_time", "")) > str(merged[k].get("generated_time", "")):
+            merged[k] = r
+    return list(merged.values())
+
+
+def merge_data(local, remote):
+    """云端∪本地 合并存档：日志按记录 id 去重取并集，派生值从日志重建。
+    返回 (merged, cloud_new, local_new)：cloud_new=云端多出的条数，local_new=本地多出的条数。"""
+    merged = dict(local)
+    cloud_new = 0
+    local_new = 0
+    for key in ("action_log", "resistance_log", "redemption_log"):
+        l_ids = {e.get("id") or _stable_entry_id(e) for e in local.get(key, [])}
+        r_ids = {e.get("id") or _stable_entry_id(e) for e in remote.get(key, [])}
+        cloud_new += len(r_ids - l_ids)
+        local_new += len(l_ids - r_ids)
+        merged[key] = _merge_entries_by_id(local.get(key, []), remote.get(key, []))
+    l_ck, r_ck = set(local.get("checkin_log", [])), set(remote.get("checkin_log", []))
+    cloud_new += len(r_ck - l_ck)
+    local_new += len(l_ck - r_ck)
+    merged["checkin_log"] = sorted(l_ck | r_ck)
+    merged["rewards"] = _merge_by_name(local.get("rewards", []), remote.get("rewards", []))
+    merged["quick_actions"] = _merge_by_name(local.get("quick_actions", []), remote.get("quick_actions", []))
+    # 成就：unlocked 取两侧的或（bonus 积分以日志为准，迁移时会重新核对）
+    r_achs = {a.get("id"): a for a in remote.get("achievements", [])}
+    for a in merged.get("achievements", []):
+        ra = r_achs.get(a.get("id"))
+        if ra and ra.get("unlocked") and not a.get("unlocked"):
+            a["unlocked"] = True
+            a["unlocked_time"] = ra.get("unlocked_time")
+    merged["reports"] = _merge_reports(local.get("reports", []), remote.get("reports", []))
+    merged["rev"] = max(int(local.get("rev", 0) or 0), int(remote.get("rev", 0) or 0))
+    if cloud_new or local_new:
+        # 有分叉才重建，避免覆盖「重置属性为0」这类刻意清零的状态
+        rebuild_stats_from_logs(merged)
+    return merged, cloud_new, local_new
+
+
 def _migrate_data(data):
     """数据迁移：补字段、兼容旧版、合并成就定义、追溯解锁。"""
     if not isinstance(data, dict):
@@ -835,6 +951,9 @@ def _migrate_data(data):
     for k in base["stats"]:
         if k not in data["stats"]:
             data["stats"][k] = base["stats"][k]
+    # 给旧记录补唯一 ID（云存档合并去重用）
+    for key in ("action_log", "resistance_log", "redemption_log"):
+        _ensure_ids(data.get(key, []))
     # 兼容旧版：去掉旧的 claimed 字段
     for r in data.get("rewards", []):
         r.pop("claimed", None)
@@ -855,25 +974,51 @@ def _migrate_data(data):
                 **ach_def, "unlocked": False, "unlocked_time": None,
             })
     # 追溯解锁：根据历史行为点亮已有成就（发 bonus 积分）
+    # 注意：这里不再自行保存，由调用方（load_data / 同步按钮）统一收口
     newly = check_achievements(data, retroactive=True)
     if newly:
-        cloud_save(data)
-        local_save(data)
         st.session_state["retroactive_achievements"] = newly
     return data
 
 
 def load_data():
-    data = cloud_load() or local_load() or new_data()
-    return _migrate_data(data)
+    cloud = cloud_load()
+    local = local_load()
+    push_needed = False
+    if cloud and local:
+        # 云端、本地都存在：按记录 ID 做并集合并，谁都不丢
+        data, cloud_new, local_new = merge_data(local, cloud)
+        push_needed = cloud_new > 0 or local_new > 0
+    else:
+        data = cloud or local or new_data()
+    before = json.dumps(data, sort_keys=True, ensure_ascii=False)
+    data = _migrate_data(data)
+    after = json.dumps(data, sort_keys=True, ensure_ascii=False)
+    if push_needed or before != after:
+        # 把合并/迁移结果推回云端，两端对齐（迁移补 ID 等只发生一次）
+        save_data(data)
+    return data
 
 def save_data(data):
+    data["rev"] = int(data.get("rev", 0)) + 1
+    data["saved_at"] = now_str()
     cloud_ok = cloud_save(data)
     local_ok = local_save(data)
-    if not cloud_ok and API_KEY and BIN_ID:
-        st.toast("☁️ 云端保存失败，已保存到本地", icon="⚠️")
+    if cloud_ok:
+        st.session_state["cloud_dirty"] = False
+    elif API_KEY and BIN_ID:
+        st.session_state["cloud_dirty"] = True
+        st.toast("☁️ 云端保存失败，已保存到本地，下次操作会自动重试", icon="⚠️")
     if not local_ok:
         st.toast("⚠️ 本地保存也失败了，请检查磁盘空间", icon="🚨")
+    # 体积接近 JSONBin 免费版 100KB 上限时提醒一次
+    try:
+        size = len(json.dumps(data, ensure_ascii=False).encode("utf-8"))
+    except Exception:
+        size = 0
+    if size > SIZE_WARN_BYTES and not st.session_state.get("size_warned"):
+        st.session_state["size_warned"] = True
+        st.toast(f"📏 存档已 {size // 1024} KB，接近 JSONBin 免费版 100KB 上限，请尽快导出备份", icon="⚠️")
     return cloud_ok and local_ok
 
 # ---------- 自定义样式 ----------
@@ -1201,6 +1346,9 @@ if not st.session_state.authed:
             unsafe_allow_html=True,
         )
         st.markdown("<br>", unsafe_allow_html=True)
+        if not PASSWORD:
+            st.error("⚠️ 未配置登录密码：请在文件顶部 APP_PASSWORD 或 Streamlit Secrets 的 PASSWORD 中设置")
+            st.stop()
         pwd = st.text_input("🔑 输入密码", type="password", key="login_pwd")
         if st.button("⚔️ 进入系统", use_container_width=True):
             if pwd == PASSWORD:
@@ -1352,14 +1500,30 @@ with st.sidebar:
     if API_KEY and BIN_ID:
         st.success("☁️ 云存档已连接")
         st.caption("Bin: ..." + BIN_ID[-6:])
+        _saved_at = data.get("saved_at", "")
+        if _saved_at:
+            st.caption(f"上次保存：{_saved_at} · v{data.get('rev', 0)}")
+        if st.session_state.get("cloud_dirty"):
+            st.warning("⏳ 有更改尚未同步到云端，下次操作会自动重试")
         if st.button("🔄 同步云端", use_container_width=True):
             with st.spinner("同步中..."):
                 cloud_data = cloud_load()
                 if cloud_data:
-                    cloud_data = _migrate_data(cloud_data)
-                    st.session_state.data = cloud_data
-                    data = cloud_data
-                    flash_success("✅ 已拉取云端最新数据")
+                    # 与云端按记录 ID 合并（不再整体覆盖，谁的数据都不丢）
+                    merged, cloud_new, local_new = merge_data(data, cloud_data)
+                    merged = _migrate_data(merged)
+                    if cloud_new or local_new:
+                        save_data(merged)
+                        st.session_state.data = merged
+                        data = merged
+                        if cloud_new and not local_new:
+                            flash_success(f"✅ 已从云端合并 {cloud_new} 条新记录")
+                        elif local_new and not cloud_new:
+                            flash_success(f"✅ 本地 {local_new} 条新记录已推送到云端")
+                        else:
+                            flash_success(f"✅ 已合并云端 {cloud_new} 条、推送本地 {local_new} 条记录")
+                    else:
+                        flash_success("✅ 云端与本地一致，已是最新")
                     st.rerun()
                 else:
                     st.error("⚠️ 同步失败，请检查网络后重试")
@@ -1384,14 +1548,7 @@ with st.sidebar:
             data.setdefault("checkin_log", []).append(today_ds)
             _new_streak = get_checkin_streak(data)
             _reward = get_checkin_reward(_new_streak)
-            data["total_earned"] += _reward
-            data["action_log"].append({
-                "time": now_str(),
-                "task": f"📅 每日签到（连续{_new_streak}天）",
-                "attribute": "",
-                "points": _reward,
-                "source": "签到",
-            })
+            add_points(data, "", _reward, f"📅 每日签到（连续{_new_streak}天）", source=SOURCE_CHECKIN)
             newly = check_achievements(data)
             save_data(data)
             st.session_state.data = data
@@ -1399,9 +1556,7 @@ with st.sidebar:
             if newly:
                 _ach_names = "、".join(a["name"] for a in newly)
                 _flash += f"\n\n🏅 成就解锁：{_ach_names}"
-            flash_success(_flash, icon="📋", position="checkin")
-            if newly:
-                st.balloons()
+            flash_success(_flash, icon="📋", position="checkin", balloons=bool(newly))
             st.rerun()
     if _checkin_streak > 0 and not _checked_today:
         st.caption(f"当前连续签到 {_checkin_streak} 天，别断了！")
@@ -1490,21 +1645,7 @@ with tab1:
                 with cols[j]:
                     btn_label = f"{name}\n{icon}+{points}"
                     if st.button(btn_label, key="quick_action_" + str(idx), use_container_width=True):
-                        # 更新属性与积分
-                        data["stats"][attr_key] += points
-                        data["total_earned"] += points
-
-                        # 写入历史日志
-                        data["action_log"].append(
-                            {
-                                "time": now_str(),
-                                "task": "快捷记录：" + name,
-                                "attribute": attr_key,
-                                "points": points,
-                                "source": "任务",
-                                "mood": quick_mood,
-                            }
-                        )
+                        add_points(data, attr_key, points, "快捷记录：" + name, mood=quick_mood)
 
                         newly = check_achievements(data)
                         save_data(data)
@@ -1516,10 +1657,7 @@ with tab1:
                         if newly:
                             _ach_names = "、".join(a["name"] for a in newly)
                             _flash += f"\n\n🏅 成就解锁：{_ach_names}"
-                        flash_success(_flash, icon="🐾", position="record")
-
-                        if points >= 10 or newly:
-                            st.balloons()
+                        flash_success(_flash, icon="🐾", position="record", balloons=(points >= 10 or bool(newly)))
                         st.rerun()
 
     st.markdown("---")
@@ -1593,18 +1731,9 @@ with tab1:
             else:
                 task_time = task_date.strftime("%Y-%m-%d") + " 12:00"
 
-            data["stats"][attr_key] += points
-            data["total_earned"] += points
-            data["action_log"].append(
-                {
-                    "time": task_time,
-                    "task": task_desc or "(未填写)",
-                    "attribute": attr_key,
-                    "points": points,
-                    "source": "任务",
-                    "backdated": is_backdated,
-                    "mood": task_mood,
-                }
+            add_points(
+                data, attr_key, points, task_desc or "(未填写)",
+                mood=task_mood, backdated=is_backdated, time_str=task_time,
             )
 
             newly = check_achievements(data)
@@ -1617,10 +1746,7 @@ with tab1:
             if newly:
                 _ach_names = "、".join(a["name"] for a in newly)
                 _flash += f"\n\n🏅 成就解锁：{_ach_names}"
-            flash_success(_flash, icon="✅", position="record")
-
-            if points >= 20 or newly:
-                st.balloons()
+            flash_success(_flash, icon="✅", position="record", balloons=(points >= 20 or bool(newly)))
             if "task_date" in st.session_state:
                 del st.session_state["task_date"]
             st.rerun()
@@ -1662,6 +1788,7 @@ with tab2:
         data["total_earned"] += 1
         data["resistance_log"].append(
             {
+                "id": new_entry_id(),
                 "time": now_str(),
                 "reason": reason,
                 "detail": detail or "(未填写)",
@@ -1677,9 +1804,7 @@ with tab2:
         if newly:
             _ach_names = "、".join(a["name"] for a in newly)
             _flash += f"\n\n🏅 成就解锁：{_ach_names}"
-        flash_success(_flash, icon="💪", position="resistance")
-        if newly:
-            st.balloons()
+        flash_success(_flash, icon="💪", position="resistance", balloons=bool(newly))
         st.rerun()
         
 # ════════ Tab 3：奖励商店 ════════
@@ -1734,6 +1859,7 @@ with tab3:
                     if st.button("兑换", key="r_" + str(i), type="primary", use_container_width=True):
                         data["redemption_log"].append(
                             {
+                                "id": new_entry_id(),
                                 "time": now_str(),
                                 "reward_name": reward.get("name", "未命名"),
                                 "cost": cost,
@@ -1746,9 +1872,7 @@ with tab3:
                         if newly:
                             _ach_names = "、".join(a["name"] for a in newly)
                             _flash += f"\n\n🏅 成就解锁：{_ach_names}"
-                        flash_success(_flash, icon="🎁", position="redeem")
-                        if newly:
-                            st.balloons()
+                        flash_success(_flash, icon="🎁", position="redeem", balloons=bool(newly))
                         st.rerun()
                 else:
                     st.button("积分不够", disabled=True, key="r_" + str(i), use_container_width=True)
@@ -1785,6 +1909,44 @@ with tab4:
     show_flash_message("history")
     st.markdown("### 📋 历史日志")
 
+    # ---- 撤销最近一条（跨行为/阻力，取时间最新的一条非成就记录） ----
+    _al = data.get("action_log", [])
+    _rl = data.get("resistance_log", [])
+    _last_act_idx = next((i for i in range(len(_al) - 1, -1, -1)
+                          if _al[i].get("source", SOURCE_TASK) != SOURCE_ACH), None)
+    _last_res_idx = len(_rl) - 1 if _rl else None
+
+    if _last_act_idx is not None or _last_res_idx is not None:
+        _ta = _al[_last_act_idx].get("time", "") if _last_act_idx is not None else ""
+        _tr = _rl[_last_res_idx].get("time", "") if _last_res_idx is not None else ""
+        _undo_from_action = _last_act_idx is not None and (not _tr or _ta >= _tr)
+        _undo_label = (_al[_last_act_idx].get("task", "未命名记录") if _undo_from_action
+                       else _rl[_last_res_idx].get("reason", "阻力复盘"))
+
+        if not st.session_state.get("confirm_undo_latest"):
+            if st.button("↩️ 撤销最近一条记录"):
+                st.session_state["confirm_undo_latest"] = True
+                st.rerun()
+        else:
+            st.warning(f"将撤销：{_undo_label}（属性与积分一并回收）")
+            _uc1, _uc2 = st.columns(2)
+            with _uc1:
+                if st.button("⚠️ 确认撤销", key="confirm_undo_yes", type="primary"):
+                    if _undo_from_action:
+                        remove_action_entry(data, _last_act_idx)
+                    else:
+                        remove_resistance_entry(data, _last_res_idx)
+                    save_data(data)
+                    st.session_state.data = data
+                    st.session_state.pop("confirm_undo_latest", None)
+                    flash_success(f"↩️ 已撤销：{_undo_label}", position="history")
+                    st.rerun()
+            with _uc2:
+                if st.button("取消", key="confirm_undo_no"):
+                    st.session_state.pop("confirm_undo_latest", None)
+                    st.rerun()
+        st.markdown("---")
+
     log1, log2, log3 = st.tabs(["📝 行为日志", "🚧 阻力记录", "📜 兑换记录"])
 
     # --- 行为日志 ---
@@ -1809,8 +1971,8 @@ with tab4:
             _start = max(0, len(action_logs) - show_count_action)
             for _idx in range(len(action_logs) - 1, _start - 1, -1):
                 entry = action_logs[_idx]
-                source = entry.get("source", "任务")
-                if source == "成就":
+                source = entry.get("source", SOURCE_TASK)
+                if source == SOURCE_ACH:
                     attr_emoji = "🏅"
                 else:
                     attr_emoji = {
@@ -1836,7 +1998,7 @@ with tab4:
                     st.markdown("**得分**: +" + str(entry.get("points", "?")))
 
                     # 修改日期（成就类不允许改）
-                    if source != "成就":
+                    if source != SOURCE_ACH:
                         _edit_key = f"edit_action_{_idx}"
                         if st.button("✏️ 修改日期", key=f"btn_{_edit_key}"):
                             st.session_state[_edit_key] = not st.session_state.get(_edit_key, False)
@@ -1863,6 +2025,29 @@ with tab4:
                                 if st.button("取消", key=f"cancel_{_edit_key}"):
                                     st.session_state.pop(_edit_key, None)
                                     st.rerun()
+
+                    # 删除记录（成就来源不可删，会破坏成就积分一致性）
+                    if source != SOURCE_ACH:
+                        _del_key = f"del_action_{_idx}"
+                        if st.button("🗑️ 删除此条", key=f"btn_{_del_key}"):
+                            st.session_state[_del_key] = not st.session_state.get(_del_key, False)
+                        if st.session_state.get(_del_key):
+                            st.warning("删除后该条属性与积分会一并回收，确定吗？")
+                            _dc1, _dc2 = st.columns(2)
+                            with _dc1:
+                                if st.button("⚠️ 确认删除", key=f"yes_{_del_key}", type="primary"):
+                                    remove_action_entry(data, _idx)
+                                    save_data(data)
+                                    st.session_state.data = data
+                                    st.session_state.pop(_del_key, None)
+                                    flash_success("🗑️ 已删除该记录并回收积分", position="history")
+                                    st.rerun()
+                            with _dc2:
+                                if st.button("取消", key=f"no_{_del_key}"):
+                                    st.session_state.pop(_del_key, None)
+                                    st.rerun()
+                    else:
+                        st.caption("🏅 成就记录不可删除（会破坏成就积分一致性）")
 
     # --- 阻力记录 ---
     with log2:
@@ -1923,6 +2108,26 @@ with tab4:
                                 st.session_state.pop(_edit_key, None)
                                 st.rerun()
 
+                    # 删除记录
+                    _del_key = f"del_resist_{_ridx}"
+                    if st.button("🗑️ 删除此条", key=f"btn_{_del_key}"):
+                        st.session_state[_del_key] = not st.session_state.get(_del_key, False)
+                    if st.session_state.get(_del_key):
+                        st.warning("删除后会回收 1 点意志力与积分，确定吗？")
+                        _dc1, _dc2 = st.columns(2)
+                        with _dc1:
+                            if st.button("⚠️ 确认删除", key=f"yes_{_del_key}", type="primary"):
+                                remove_resistance_entry(data, _ridx)
+                                save_data(data)
+                                st.session_state.data = data
+                                st.session_state.pop(_del_key, None)
+                                flash_success("🗑️ 已删除该阻力记录", position="history")
+                                st.rerun()
+                        with _dc2:
+                            if st.button("取消", key=f"no_{_del_key}"):
+                                st.session_state.pop(_del_key, None)
+                                st.rerun()
+
     # --- 兑换记录 ---
     with log3:
         redemption_logs = data.get("redemption_log", [])
@@ -1948,6 +2153,20 @@ with tab4:
                     + str(entry.get("cost", 0))
                     + " pts"
                 )
+
+            # 删除兑换记录（可用积分 = 累计 - 已花费，删除后自动退回）
+            del_rd_idx = st.selectbox(
+                "选择要删除的兑换记录",
+                range(len(redemption_logs)),
+                format_func=lambda i: f"{redemption_logs[i].get('time', '')} | {redemption_logs[i].get('reward_name', '')} | -{redemption_logs[i].get('cost', 0)} pts",
+                key="del_redemption",
+            )
+            if st.button("🗑️ 删除选中的兑换记录（积分退回）"):
+                _removed = data["redemption_log"].pop(del_rd_idx)
+                save_data(data)
+                st.session_state.data = data
+                flash_success(f"✅ 已删除兑换记录：{_removed.get('reward_name', '')}（积分已退回）", position="history")
+                st.rerun()
                 
                 
 # ════════ Tab 5：统计 ════════
@@ -2014,9 +2233,9 @@ with tab5:
             except Exception as e:
                 st.warning(f"本周周报自动生成失败：{e}", icon="⚠️")
 
-        # 清理：reports 最多保留 50 份，按时间倒序截断
-        if len(reports) > 50:
-            reports = sorted(reports, key=lambda r: r.get("generated_time", ""), reverse=True)[:50]
+        # 清理：reports 最多保留 30 份（控制存档体积，JSONBin 免费版上限 100KB）
+        if len(reports) > 30:
+            reports = sorted(reports, key=lambda r: r.get("generated_time", ""), reverse=True)[:30]
             data["reports"] = reports
             save_data(data)
             st.session_state.data = data
@@ -2111,18 +2330,7 @@ with tab5:
     avg_daily = round(total_points / max(total_days, 1), 1)
 
     # 连续记录天数（今天没记录则从昨天开始算，不直接归零）
-    streak = 0
-    check_date = today_date
-    today_ds = today_date.strftime("%Y-%m-%d")
-    if today_ds not in daily:
-        check_date = today_date - timedelta(days=1)
-    while True:
-        ds = check_date.strftime("%Y-%m-%d")
-        if ds in daily:
-            streak += 1
-            check_date -= timedelta(days=1)
-        else:
-            break
+    streak = calc_streak(set(daily.keys()), today_date)
 
     s1, s2, s3 = st.columns(3)
     with s1:
@@ -2288,8 +2496,8 @@ with tab5:
 
     mood_data = {}
     for entry in data.get("action_log", []):
-        source = entry.get("source", "任务")
-        if source in ("成就", "签到"):
+        source = entry.get("source", SOURCE_TASK)
+        if source in (SOURCE_ACH, SOURCE_CHECKIN):
             continue
         mood = entry.get("mood", "🙂")
         if mood not in VALID_MOODS:
@@ -2524,15 +2732,18 @@ with tab7:
             if newly:
                 _ach_names = "、".join(a["name"] for a in newly)
                 _flash += f"\n\n🏅 成就解锁：{_ach_names}"
-            flash_success(_flash, icon="🩹", position="settings")
-            if newly:
-                st.balloons()
+            flash_success(_flash, icon="🩹", position="settings", balloons=bool(newly))
             st.rerun()
 
 
     # -- 备份 --
     st.markdown("---")
     st.markdown("#### 📤 备份数据")
+    try:
+        _size_kb = len(json.dumps(data, ensure_ascii=False).encode("utf-8")) / 1024
+    except Exception:
+        _size_kb = 0
+    st.caption(f"当前存档体积：{_size_kb:.1f} KB（JSONBin 免费版单 bin 上限 100 KB，建议定期导出备份）")
     st.download_button(
         label="下载 JSON 备份",
         data=json.dumps(data, ensure_ascii=False, indent=2),
