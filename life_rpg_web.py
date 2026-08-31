@@ -914,8 +914,8 @@ def _sb_refresh_auth():
         sb.auth.refresh_session()
         return True
     except Exception:
-        email = st.session_state.get("login_email")
-        pwd = st.session_state.get("login_password")
+        email = st.session_state.get("sb_email")
+        pwd = st.session_state.get("sb_pwd")
         if not email or not pwd:
             return False
         try:
@@ -1518,13 +1518,17 @@ if not st.session_state.authed:
                     if resp.user is not None:
                         st.session_state["uid"] = resp.user.id
                         st.session_state["user_email"] = resp.user.email or email.strip()
-                        st.session_state["login_email"] = email.strip()
-                        st.session_state["login_password"] = pwd
+                        st.session_state["sb_email"] = email.strip()
+                        st.session_state["sb_pwd"] = pwd
                         _login_ok = True
                 except Exception as e:
                     _s = str(e).lower()
-                    if "invalid login" in _s or "email not confirmed" in _s or "password" in _s or "401" in _s:
-                        st.error("❌ 邮箱或密码错误（账号与清单程序相同）")
+                    if "invalid api key" in _s or "invalid_api_key" in _s or "apikey" in _s:
+                        st.error("❌ 配置错误：SUPABASE_URL 和 SUPABASE_ANON_KEY 不属于同一个项目（Key 必须从 URL 对应项目的 API Keys 页复制）")
+                    elif "email not confirmed" in _s:
+                        st.error("❌ 邮箱未验证：请在收件箱里点击 Supabase 发来的确认邮件")
+                    elif "invalid login" in _s or "credentials" in _s or "password" in _s or "401" in _s:
+                        st.error("❌ 邮箱或密码错误：账号必须是本项目 Authentication → Users 列表里已有的那个（Supabase 网站登录密码不算）")
                     else:
                         st.error(f"❌ 登录失败（网络/服务异常）：{e}")
                 if _login_ok:
@@ -1829,8 +1833,10 @@ with st.sidebar:
         st.session_state.authed = False
         st.session_state.data = None
         st.session_state["uid"] = None
+        st.session_state.pop("sb_email", None)
+        st.session_state.pop("sb_pwd", None)
         st.session_state.pop("login_email", None)
-        st.session_state.pop("login_password", None)
+        st.session_state.pop("login_pwd", None)
         st.rerun()
 
 # -------- 属性面板（占位：实际渲染在文件末尾，确保即时刷新）--------
