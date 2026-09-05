@@ -15,6 +15,11 @@ from uuid import uuid4
 import plotly.graph_objects as go
 from datetime import datetime
 
+# —— Streamlit 能力探测：旧版本自动降级到对应的基础实现 ——
+HAS_FRAGMENT = hasattr(st, "fragment")                               # ≥1.37 局部刷新
+HAS_DIALOG = hasattr(st, "dialog")                                   # ≥1.44 模态确认弹窗
+HAS_NAV = hasattr(st, "navigation") and hasattr(st, "Page")          # ≥1.40 官方页面导航
+
 try:
     from supabase import create_client as _sb_create_client
 except ImportError:
@@ -148,6 +153,49 @@ def show_flash_message(position="top"):
         st.success(flash["message"], icon=flash.get("icon", "✅"))
     elif flash["type"] == "info":
         st.info(flash["message"], icon=flash.get("icon", "ℹ️"))
+
+
+# ---------- 通用确认流程（≥1.44 弹窗；旧版本降级为页面内两步确认） ----------
+if HAS_DIALOG:
+    @st.dialog("⚠️ 请确认")
+    def _confirm_dialog(message, action_fn, ok_label):
+        st.markdown(message)
+        _c1, _c2 = st.columns(2)
+        with _c1:
+            if st.button(ok_label, type="primary", use_container_width=True):
+                action_fn()
+                st.rerun()
+        with _c2:
+            if st.button("取消", use_container_width=True):
+                st.rerun()
+
+
+def confirm_flow(key, message, action_fn, ok_label="⚠️ 确认"):
+    """在触发按钮的点击分支中调用。支持弹窗时打开模态确认框；
+    否则设置会话标记并整页刷新，由 confirm_flow_body 在原位置渲染降级确认区。"""
+    if HAS_DIALOG:
+        _confirm_dialog(message, action_fn, ok_label)
+    else:
+        st.session_state[f"_confirm_{key}"] = True
+        st.rerun()
+
+
+def confirm_flow_body(key, message, action_fn, ok_label="⚠️ 确认"):
+    """降级路径渲染：无弹窗支持且处于确认态时，在调用位置渲染两步确认区。"""
+    if HAS_DIALOG or not st.session_state.get(f"_confirm_{key}"):
+        return False
+    st.warning(message)
+    _c1, _c2 = st.columns(2)
+    with _c1:
+        if st.button(ok_label, key=f"_ok_{key}", type="primary"):
+            st.session_state.pop(f"_confirm_{key}", None)
+            action_fn()
+            st.rerun()
+    with _c2:
+        if st.button("取消", key=f"_cancel_{key}"):
+            st.session_state.pop(f"_confirm_{key}", None)
+            st.rerun()
+    return True
 
 
 VALID_ATTRS = {"Productivity", "Creativity", "Willpower", "Vitality"}
@@ -1629,6 +1677,32 @@ code {
     }
 }
 
+/* 弹层（日期选择器 / 下拉菜单）随主题配色 */
+[data-baseweb="popover"] > div,
+[data-baseweb="popover"] [data-baseweb="calendar"],
+[data-baseweb="popover"] [role="listbox"] {
+    background-color: [inp] !important;
+    border: 1px solid [bd] !important;
+}
+[data-baseweb="popover"] * {
+    color: [tx_m] !important;
+}
+[data-baseweb="calendar"] button[aria-current="date"],
+[data-baseweb="calendar"] [aria-selected="true"] {
+    background-color: [ac] !important;
+    color: [p_tx] !important;
+    border-radius: 6px;
+}
+[data-baseweb="calendar"] button:hover {
+    background-color: [btn_h] !important;
+}
+
+/* 细滚动条 */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: [bd]; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: [ac_l]; }
+
 /* ═══════════════════════════════════
    移动端适配
    ═══════════════════════════════════ */
@@ -2024,6 +2098,7 @@ with st.sidebar:
     _email = st.session_state.get("user_email", "")
     if _email:
         st.caption(f"👤 已登录：{_email}")
+    st.caption(f"ℹ️ Streamlit v{st.__version__} · 弹窗确认 {'✓' if HAS_DIALOG else '✗'} · 局部刷新 {'✓' if HAS_FRAGMENT else '✗'} · 官方导航 {'✓' if HAS_NAV else '✗'}")
     if st.button("💾 保存并退出", use_container_width=True):
         save_data(data)
         st.session_state.authed = False
@@ -2059,13 +2134,11 @@ total = data.get("total_earned", 0) - total_spent
 
 st.markdown("---")
 
-# -------- 功能页导航（只渲染当前页，避免每次点击整页重算）--------
-PAGES = ['📝 记录任务', '🚧 阻力复盘', '🏆 奖励商店', '📋 历史日志', '📊 统计', '🏅 成就', '⚙️ 设置']
-page = st.radio("功能页", PAGES, horizontal=True, key="page_nav")
+# -------- 页面函数见下；页面调度在文件末尾（stats_placeholder 回填前） --------
 
 
 # ════════ Tab 1：记录任务 ════════
-if page == "📝 记录任务":
+def page_record():
         show_flash_message("record")
         st.markdown("### 📝 记录完成的任务")
         st.caption("每完成一件事，就赚一点经验值。积少成多。")
@@ -2215,7 +2288,7 @@ if page == "📝 记录任务":
 
 
 # ════════ Tab 2：阻力复盘 ════════
-if page == "🚧 阻力复盘":
+def page_resistance():
         show_flash_message("resistance")
         st.markdown("### 🚧 阻力复盘")
         st.info(
@@ -2270,7 +2343,7 @@ if page == "🚧 阻力复盘":
             st.rerun()
         
 # ════════ Tab 3：奖励商店 ════════
-if page == "🏆 奖励商店":
+def page_shop():
         show_flash_message("redeem")
         _total_spent = sum(r.get("cost", 0) for r in data.get("redemption_log", []))
         _total = data.get("total_earned", 0) - _total_spent
@@ -2367,48 +2440,7 @@ if page == "🏆 奖励商店":
 
 
 # ════════ Tab 4：历史日志 ════════
-if page == "📋 历史日志":
-        show_flash_message("history")
-        st.markdown("### 📋 历史日志")
-
-        # ---- 撤销最近一条（跨行为/阻力，取时间最新的一条非成就记录） ----
-        _al = data.get("action_log", [])
-        _rl = data.get("resistance_log", [])
-        _last_act_idx = next((i for i in range(len(_al) - 1, -1, -1)
-                              if _al[i].get("source", SOURCE_TASK) != SOURCE_ACH), None)
-        _last_res_idx = len(_rl) - 1 if _rl else None
-
-        if _last_act_idx is not None or _last_res_idx is not None:
-            _ta = _al[_last_act_idx].get("time", "") if _last_act_idx is not None else ""
-            _tr = _rl[_last_res_idx].get("time", "") if _last_res_idx is not None else ""
-            _undo_from_action = _last_act_idx is not None and (not _tr or _ta >= _tr)
-            _undo_label = (_al[_last_act_idx].get("task", "未命名记录") if _undo_from_action
-                           else _rl[_last_res_idx].get("reason", "阻力复盘"))
-
-            if not st.session_state.get("confirm_undo_latest"):
-                if st.button("↩️ 撤销最近一条记录"):
-                    st.session_state["confirm_undo_latest"] = True
-                    st.rerun()
-            else:
-                st.warning(f"将撤销：{_undo_label}（属性与积分一并回收）")
-                _uc1, _uc2 = st.columns(2)
-                with _uc1:
-                    if st.button("⚠️ 确认撤销", key="confirm_undo_yes", type="primary"):
-                        if _undo_from_action:
-                            remove_action_entry(data, _last_act_idx)
-                        else:
-                            remove_resistance_entry(data, _last_res_idx)
-                        save_data(data)
-                        st.session_state.data = data
-                        st.session_state.pop("confirm_undo_latest", None)
-                        flash_success(f"↩️ 已撤销：{_undo_label}", position="history")
-                        st.rerun()
-                with _uc2:
-                    if st.button("取消", key="confirm_undo_no"):
-                        st.session_state.pop("confirm_undo_latest", None)
-                        st.rerun()
-            st.markdown("---")
-
+def _history_lists_impl():
         log1, log2, log3 = st.tabs(["📝 行为日志", "🚧 阻力记录", "📜 兑换记录"])
 
         # --- 行为日志 ---
@@ -2645,8 +2677,164 @@ if page == "📋 历史日志":
                             st.rerun()
                 
                 
+
+
+if HAS_FRAGMENT:
+    history_lists_fragment = st.fragment(_history_lists_impl)
+else:
+    history_lists_fragment = _history_lists_impl
+
+
+def page_history():
+        show_flash_message("history")
+        st.markdown("### 📋 历史日志")
+
+        # ---- 撤销最近一条（跨行为/阻力，取时间最新的一条非成就记录） ----
+        _al = data.get("action_log", [])
+        _rl = data.get("resistance_log", [])
+        _last_act_idx = next((i for i in range(len(_al) - 1, -1, -1)
+                              if _al[i].get("source", SOURCE_TASK) != SOURCE_ACH), None)
+        _last_res_idx = len(_rl) - 1 if _rl else None
+
+        if _last_act_idx is not None or _last_res_idx is not None:
+            _ta = _al[_last_act_idx].get("time", "") if _last_act_idx is not None else ""
+            _tr = _rl[_last_res_idx].get("time", "") if _last_res_idx is not None else ""
+            _undo_from_action = _last_act_idx is not None and (not _tr or _ta >= _tr)
+            _undo_label = (_al[_last_act_idx].get("task", "未命名记录") if _undo_from_action
+                           else _rl[_last_res_idx].get("reason", "阻力复盘"))
+
+            def _do_undo():
+                if _undo_from_action:
+                    remove_action_entry(data, _last_act_idx)
+                else:
+                    remove_resistance_entry(data, _last_res_idx)
+                save_data(data)
+                st.session_state.data = data
+                flash_success(f"↩️ 已撤销：{_undo_label}", position="history")
+
+            if st.button("↩️ 撤销最近一条记录"):
+                confirm_flow("undo_latest", f"将撤销：{_undo_label}（属性与积分一并回收）", _do_undo, ok_label="↩️ 确认撤销")
+            confirm_flow_body("undo_latest", f"将撤销：{_undo_label}（属性与积分一并回收）", _do_undo, ok_label="↩️ 确认撤销")
+            st.markdown("---")
+
+        history_lists_fragment()
+
 # ════════ Tab 5：统计 ════════
-if page == "📊 统计":
+def _stats_charts_impl(daily, today_date):
+        st.markdown("#### 📊 每日加分（近 14 天）")
+
+        bar_range_choice = st.selectbox(
+            "📅 查看范围",
+            [7, 14, 30, 60, 90],
+            index=1,
+            format_func=lambda x: f"近 {x} 天",
+            key="bar_range",
+        )
+        days_range = bar_range_choice
+        bar_dates = []
+        for i in range(days_range - 1, -1, -1):
+            d = today_date - timedelta(days=i)
+            bar_dates.append(d.strftime("%Y-%m-%d"))
+
+        prod_vals = [daily.get(d, {}).get("Productivity", 0) for d in bar_dates]
+        crea_vals = [daily.get(d, {}).get("Creativity", 0) for d in bar_dates]
+        will_vals = [daily.get(d, {}).get("Willpower", 0) for d in bar_dates]
+        vitl_vals = [daily.get(d, {}).get("Vitality", 0) for d in bar_dates]
+
+        bar_labels = [d[5:] for d in bar_dates]
+        bar_labels = [str(x) for x in bar_labels]  # 强制转为文本，防止 Plotly 自动解析日期
+
+        fig_bar = go.Figure()
+        fig_bar.add_trace(go.Bar(name="⚡ 生产力", x=bar_labels, y=prod_vals, marker_color="#7a9eb0"))
+        fig_bar.add_trace(go.Bar(name="💡 创造力", x=bar_labels, y=crea_vals, marker_color="#c7958d"))
+        fig_bar.add_trace(go.Bar(name="🔥 意志力", x=bar_labels, y=will_vals, marker_color="#d48090"))
+        fig_bar.add_trace(go.Bar(name="💚 精力", x=bar_labels, y=vitl_vals, marker_color="#7fc5ca"))
+        fig_bar.update_layout(
+            barmode="stack",
+            height=300,
+            margin=dict(t=10, b=30, l=30, r=10),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02),
+            xaxis_title=None,
+            yaxis_title="积分",
+            xaxis=dict(type="category"),  # 当作分类轴，不自动解析日期
+        )
+        st.plotly_chart(fig_bar, use_container_width=True)
+
+        st.markdown("---")
+
+        # ---- 活动热力图 ----
+        st.markdown("#### 🔥 活动热力图（近 12 周）")
+        st.caption("颜色越深 = 当天获得积分越多。空白 = 没有记录。")
+
+        heat_range_choice = st.selectbox(
+            "🗓️ 热力图范围",
+            [4, 8, 12, 24, 52, 104],
+            index=2,
+            format_func=lambda x: f"近 {x} 周",
+            key="heat_range",
+        )
+        weeks_back = heat_range_choice
+        start_monday = today_date - timedelta(days=today_date.weekday() + 7 * (weeks_back - 1))
+
+        week_starts = []
+        current = start_monday
+        while current <= today_date:
+            week_starts.append(current)
+            current += timedelta(days=7)
+
+        dow_labels = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+        n_weeks = len(week_starts)
+
+        z_data = [[0] * n_weeks for _ in range(7)]
+        hover_text = [[""] * n_weeks for _ in range(7)]
+
+        for wi, monday in enumerate(week_starts):
+            for dow in range(7):
+                d = monday + timedelta(days=dow)
+                if d > today_date:
+                    z_data[dow][wi] = -1  # 未来日期标记
+                    hover_text[dow][wi] = ""
+                else:
+                    ds = d.strftime("%Y-%m-%d")
+                    pts = daily.get(ds, {}).get("total", 0)
+                    z_data[dow][wi] = pts
+                    weekday_cn = ["一", "二", "三", "四", "五", "六", "日"][dow]
+                    hover_text[dow][wi] = f"{ds} 周{weekday_cn}<br>{int(pts)} 积分"
+
+        x_labels = [w.strftime("%m/%d") for w in week_starts]
+
+        fig_heat = go.Figure(data=go.Heatmap(
+            z=z_data,
+            x=x_labels,
+            y=dow_labels,
+            text=hover_text,
+            hovertemplate="%{text}<extra></extra>",
+            colorscale=[
+                [0, "#e8e8e8"],
+                [0.01, "#d4edda"],
+                [0.2, "#7dcc7d"],
+                [0.5, "#3da63d"],
+                [1, "#1a6b1a"],
+            ],
+            showscale=False,
+            xgap=3,
+            ygap=3,
+            zmin=0,
+        ))
+        fig_heat.update_layout(
+            height=220,
+            margin=dict(t=10, b=30, l=50, r=20),
+        )
+        st.plotly_chart(fig_heat, use_container_width=True)
+
+
+if HAS_FRAGMENT:
+    stats_charts_fragment = st.fragment(_stats_charts_impl)
+else:
+    stats_charts_fragment = _stats_charts_impl
+
+
+def page_stats():
         show_flash_message("stats")
         st.markdown("### 📊 统计")
 
@@ -2907,111 +3095,8 @@ if page == "📊 统计":
         st.markdown("---")
 
         # ---- 每日加分柱状图 ----
-        st.markdown("#### 📊 每日加分（近 14 天）")
+        stats_charts_fragment(daily, today_date)
 
-        bar_range_choice = st.selectbox(
-            "📅 查看范围",
-            [7, 14, 30, 60, 90],
-            index=1,
-            format_func=lambda x: f"近 {x} 天",
-            key="bar_range",
-        )
-        days_range = bar_range_choice
-        bar_dates = []
-        for i in range(days_range - 1, -1, -1):
-            d = today_date - timedelta(days=i)
-            bar_dates.append(d.strftime("%Y-%m-%d"))
-
-        prod_vals = [daily.get(d, {}).get("Productivity", 0) for d in bar_dates]
-        crea_vals = [daily.get(d, {}).get("Creativity", 0) for d in bar_dates]
-        will_vals = [daily.get(d, {}).get("Willpower", 0) for d in bar_dates]
-        vitl_vals = [daily.get(d, {}).get("Vitality", 0) for d in bar_dates]
-
-        bar_labels = [d[5:] for d in bar_dates]
-        bar_labels = [str(x) for x in bar_labels]  # 强制转为文本，防止 Plotly 自动解析日期
-
-        fig_bar = go.Figure()
-        fig_bar.add_trace(go.Bar(name="⚡ 生产力", x=bar_labels, y=prod_vals, marker_color="#7a9eb0"))
-        fig_bar.add_trace(go.Bar(name="💡 创造力", x=bar_labels, y=crea_vals, marker_color="#c7958d"))
-        fig_bar.add_trace(go.Bar(name="🔥 意志力", x=bar_labels, y=will_vals, marker_color="#d48090"))
-        fig_bar.add_trace(go.Bar(name="💚 精力", x=bar_labels, y=vitl_vals, marker_color="#7fc5ca"))
-        fig_bar.update_layout(
-            barmode="stack",
-            height=300,
-            margin=dict(t=10, b=30, l=30, r=10),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02),
-            xaxis_title=None,
-            yaxis_title="积分",
-            xaxis=dict(type="category"),  # 当作分类轴，不自动解析日期
-        )
-        st.plotly_chart(fig_bar, use_container_width=True)
-
-        st.markdown("---")
-
-        # ---- 活动热力图 ----
-        st.markdown("#### 🔥 活动热力图（近 12 周）")
-        st.caption("颜色越深 = 当天获得积分越多。空白 = 没有记录。")
-
-        heat_range_choice = st.selectbox(
-            "🗓️ 热力图范围",
-            [4, 8, 12, 24, 52, 104],
-            index=2,
-            format_func=lambda x: f"近 {x} 周",
-            key="heat_range",
-        )
-        weeks_back = heat_range_choice
-        start_monday = today_date - timedelta(days=today_date.weekday() + 7 * (weeks_back - 1))
-
-        week_starts = []
-        current = start_monday
-        while current <= today_date:
-            week_starts.append(current)
-            current += timedelta(days=7)
-
-        dow_labels = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
-        n_weeks = len(week_starts)
-
-        z_data = [[0] * n_weeks for _ in range(7)]
-        hover_text = [[""] * n_weeks for _ in range(7)]
-
-        for wi, monday in enumerate(week_starts):
-            for dow in range(7):
-                d = monday + timedelta(days=dow)
-                if d > today_date:
-                    z_data[dow][wi] = -1  # 未来日期标记
-                    hover_text[dow][wi] = ""
-                else:
-                    ds = d.strftime("%Y-%m-%d")
-                    pts = daily.get(ds, {}).get("total", 0)
-                    z_data[dow][wi] = pts
-                    weekday_cn = ["一", "二", "三", "四", "五", "六", "日"][dow]
-                    hover_text[dow][wi] = f"{ds} 周{weekday_cn}<br>{int(pts)} 积分"
-
-        x_labels = [w.strftime("%m/%d") for w in week_starts]
-
-        fig_heat = go.Figure(data=go.Heatmap(
-            z=z_data,
-            x=x_labels,
-            y=dow_labels,
-            text=hover_text,
-            hovertemplate="%{text}<extra></extra>",
-            colorscale=[
-                [0, "#e8e8e8"],
-                [0.01, "#d4edda"],
-                [0.2, "#7dcc7d"],
-                [0.5, "#3da63d"],
-                [1, "#1a6b1a"],
-            ],
-            showscale=False,
-            xgap=3,
-            ygap=3,
-            zmin=0,
-        ))
-        fig_heat.update_layout(
-            height=220,
-            margin=dict(t=10, b=30, l=50, r=20),
-        )
-        st.plotly_chart(fig_heat, use_container_width=True)
 
         st.markdown("---")
 
@@ -3160,7 +3245,8 @@ if page == "📊 统计":
 
 
 # ════════ Tab 7：设置 ════════
-if page == "⚙️ 设置":
+def page_settings():
+        global data
         show_flash_message("settings")
         st.markdown("### ⚙️ 设置")
 
@@ -3340,7 +3426,7 @@ if page == "⚙️ 设置":
 
 
 # ════════ Tab 6：成就 ════════
-if page == "🏅 成就":
+def page_achievements():
     st.markdown("### 🏅 成就")
 
     achievements = data.get("achievements", [])
@@ -3461,6 +3547,40 @@ if page == "🏅 成就":
         st.markdown(badges_html, unsafe_allow_html=True)
 
         st.markdown("")
+# -------- 页面调度：官方导航（≥1.40），旧版本降级为横向单选按钮 --------
+PAGE_DEFS = [
+    (page_record,       "📝", "记录任务", "record",       True),
+    (page_resistance,   "🚧", "阻力复盘", "resistance",   False),
+    (page_shop,         "🏆", "奖励商店", "shop",         False),
+    (page_history,      "📋", "历史日志", "history",      False),
+    (page_stats,        "📊", "统计",     "stats",        False),
+    (page_settings,     "⚙️", "设置",     "settings",     False),
+    (page_achievements, "🏅", "成就",     "achievements", False),
+]
+
+if HAS_NAV:
+    _nav_pages = []
+    for _fn, _icon, _title, _path, _is_default in PAGE_DEFS:
+        try:
+            _nav_pages.append(st.Page(_fn, title=_title, icon=_icon, url_path=_path, default=_is_default))
+        except TypeError:  # 旧版本 st.Page 不支持 url_path/default 参数
+            _nav_pages.append(st.Page(_fn, title=_title, icon=_icon))
+    try:
+        pg = st.navigation(_nav_pages, position="top")  # ≥1.46：顶部横排导航
+    except TypeError:
+        pg = st.navigation(_nav_pages)                  # 1.40~1.45：侧边栏导航
+    pg.run()
+else:
+    PAGES = ["📝 记录任务", "🚧 阻力复盘", "🏆 奖励商店", "📋 历史日志", "📊 统计", "🏅 成就", "⚙️ 设置"]
+    page = st.radio("功能页", PAGES, horizontal=True, key="page_nav")
+    _dispatch = {
+        "📝 记录任务": page_record, "🚧 阻力复盘": page_resistance, "🏆 奖励商店": page_shop,
+        "📋 历史日志": page_history, "📊 统计": page_stats, "🏅 成就": page_achievements,
+        "⚙️ 设置": page_settings,
+    }
+    _dispatch[page]()
+
+
 
 
 # ════════════════════════════════════════════════════════
