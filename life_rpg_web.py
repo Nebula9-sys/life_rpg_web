@@ -312,32 +312,147 @@ ACHIEVEMENT_DEFS = [
     {"id": "checkin_total_100", "name": "📦 累计100天",  "desc": "累计签到 100 天",       "category": "checkin",   "bonus": 20},
     {"id": "checkin_total_222", "name": "📦 累计222天",  "desc": "累计签到 222 天",       "category": "checkin",   "bonus": 20},
     {"id": "checkin_total_365", "name": "🗓️ 累计365天",  "desc": "累计签到 365 天",       "category": "checkin",   "bonus": 100},
+    # —— 记录条数 ——
+    {"id": "records_100",          "name": "📝 百条记录",    "desc": "累计记录满 100 条",        "category": "cumulative", "bonus": 20},
+    {"id": "records_500",          "name": "📚 五百记录",    "desc": "累计记录满 500 条",        "category": "cumulative", "bonus": 40},
+    # —— 连击进阶 / 属性进阶 ——
+    {"id": "streak_50",            "name": "🔥 连击五十",    "desc": "连续记录 50 天",           "category": "special",    "bonus": 80},
+    {"id": "streak_100",           "name": "💎 百日连击",    "desc": "连续记录 100 天",          "category": "special",    "bonus": 120},
+    {"id": "stat_1000",            "name": "🌟 千点属性",    "desc": "任一属性突破 1000",        "category": "special",    "bonus": 80},
+    # —— 单日 / 补记 / 时段 ——
+    {"id": "daily_10_records",     "name": "⚡ 高产一日",    "desc": "单日记录 10 条以上",       "category": "daily",      "bonus": 40},
+    {"id": "backdate_10",          "name": "📅 时光旅人",    "desc": "补记过去日期满 10 条",     "category": "special",    "bonus": 30},
+    {"id": "early_bird_10",        "name": "🌅 早鸟",        "desc": "清晨（5-8点）记录满 10 次", "category": "special",    "bonus": 30},
+    {"id": "night_owl_10",         "name": "🦉 夜猫子",      "desc": "深夜（22点后）记录满 10 次", "category": "special",    "bonus": 30},
+    # —— 心情 / 阻力 / 签到进阶 ——
+    {"id": "mood_streak_30",       "name": "🎭 心情常驻",    "desc": "连续 30 天记录心情",       "category": "mood",       "bonus": 40},
+    {"id": "resistance_streak_30", "name": "🛡️ 连续阻力30天", "desc": "连续 30 天做阻力复盘",   "category": "daily",      "bonus": 40},
+    {"id": "checkin_streak_7",     "name": "📅 一周全勤",    "desc": "连续签到 7 天",            "category": "checkin",    "bonus": 20},
+    # —— 总体等级系列（每 100 分 = 1 级；Lv1/5/10/20/50/100 由总分成就覆盖）——
+    {"id": "level_15",             "name": "🎖️ Lv.15",      "desc": "总等级达到 15",            "category": "milestone",  "bonus": 30},
+    {"id": "level_25",             "name": "🎖️ Lv.25",      "desc": "总等级达到 25",            "category": "milestone",  "bonus": 40},
+    {"id": "level_30",             "name": "🎖️ Lv.30",      "desc": "总等级达到 30",            "category": "milestone",  "bonus": 50},
+    {"id": "level_40",             "name": "🎖️ Lv.40",      "desc": "总等级达到 40",            "category": "milestone",  "bonus": 60},
+    {"id": "level_75",             "name": "🎖️ Lv.75",      "desc": "总等级达到 75",            "category": "milestone",  "bonus": 120},
+    {"id": "level_150",            "name": "🎖️ Lv.150",     "desc": "总等级达到 150",           "category": "milestone",  "bonus": 200},
 ]
 
 
-def check_achievements(data, retroactive=False):
-    """检查并解锁成就。retroactive=True 时标记为追溯解锁（仍发 bonus 积分）。"""
+# ---------- 成就指标（判定与进度显示共用同一来源） ----------
+# 布尔型指标（只看 0/1，进度条不显示）
+_BOOL_METRICS = {"all_four", "has_comeback", "has_backdated"}
+
+# 成就 id -> (指标名, 达成阈值)
+ACH_TARGETS = {
+    # 积分 / 总等级
+    "hundred_pts":         ("total_earned", 100),
+    "five_hundred_pts":    ("total_earned", 500),
+    "thousand_pts":        ("total_earned", 1000),
+    "two_thousand_pts":    ("total_earned", 2000),
+    "five_thousand_pts":   ("total_earned", 5000),
+    "ten_thousand_pts":    ("total_earned", 10000),
+    "level_15":            ("total_level", 15),
+    "level_25":            ("total_level", 25),
+    "level_30":            ("total_level", 30),
+    "level_40":            ("total_level", 40),
+    "level_75":            ("total_level", 75),
+    "level_150":           ("total_level", 150),
+    # 活跃天数
+    "week_active":         ("active_days", 7),
+    "month_active":        ("active_days", 30),
+    "hundred_active":      ("active_days", 100),
+    "active_50":           ("active_days", 50),
+    "active_150":          ("active_days", 150),
+    "active_299":          ("active_days", 299),
+    "active_365":          ("active_days", 365),
+    "monthly_20":          ("monthly_active_days", 20),
+    # 阻力复盘
+    "first_resistance":    ("resistance_count", 1),
+    "resistance_10":       ("resistance_count", 10),
+    "resistance_30":       ("resistance_count", 30),
+    "resistance_50":       ("resistance_count", 50),
+    "resistance_100":      ("resistance_count", 100),
+    "resistance_streak_7": ("resistance_streak", 7),
+    "resistance_streak_30": ("resistance_streak", 30),
+    # 兑换
+    "first_redeem":        ("redeem_count", 1),
+    "redeem_5":            ("redeem_count", 5),
+    "redeem_10":           ("redeem_count", 10),
+    "consumed_500":        ("total_consumed", 500),
+    "consumed_1000":       ("total_consumed", 1000),
+    "consumed_2000":       ("total_consumed", 2000),
+    "consumed_5000":       ("total_consumed", 5000),
+    # 单日
+    "daily_30":            ("today_total", 30),
+    "daily_50":            ("today_total", 50),
+    "daily_100":           ("today_total", 100),
+    "daily_5_records":     ("today_records", 5),
+    "daily_10_records":    ("today_records", 10),
+    "daily_balanced":      ("all_four", 1),
+    "weekly_200":          ("this_week_total", 200),
+    # 记录 / 任务
+    "first_task":          ("task_count", 1),
+    "records_100":         ("total_records", 100),
+    "records_500":         ("total_records", 500),
+    "first_backdate":      ("backdate_count", 1),
+    "backdate_10":         ("backdate_count", 10),
+    "early_bird_10":       ("early_bird_count", 10),
+    "night_owl_10":        ("night_owl_count", 10),
+    # 连续记录
+    "streak_7":            ("streak", 7),
+    "streak_30":           ("streak", 30),
+    "streak_50":           ("streak", 50),
+    "streak_100":          ("streak", 100),
+    "comeback_3day":       ("has_comeback", 1),
+    # 属性
+    "stat_100":            ("max_stat", 100),
+    "stat_500":            ("max_stat", 500),
+    "stat_1000":           ("max_stat", 1000),
+    "all_attr_lv10":       ("min_stat", 500),
+    "all_attr_lv15":       ("min_stat", 750),
+    "all_attr_lv20":       ("min_stat", 1000),
+    "all_attr_lv30":       ("min_stat", 1500),
+    "all_attr_lv40":       ("min_stat", 2000),
+    # 心情
+    "mood_10":             ("mood_count", 10),
+    "mood_50":             ("mood_count", 50),
+    "mood_streak_7":       ("mood_streak", 7),
+    "mood_streak_30":      ("mood_streak", 30),
+    # 周报
+    "weekly_report_4":     ("weekly_report_streak", 4),
+    # 签到
+    "checkin_streak_7":    ("checkin_streak", 7),
+    "checkin_30":          ("checkin_streak", 30),
+    "checkin_50":          ("checkin_streak", 50),
+    "checkin_100":         ("checkin_streak", 100),
+    "checkin_222":         ("checkin_streak", 222),
+    "checkin_total_100":   ("total_checkin_days", 100),
+    "checkin_total_222":   ("total_checkin_days", 222),
+    "checkin_total_365":   ("total_checkin_days", 365),
+}
+
+
+def compute_achievement_metrics(data):
+    """计算成就系统全部指标。check_achievements 与成就页进度显示共用，保证口径一致。"""
     action_log = data.get("action_log", [])
     resistance_log = data.get("resistance_log", [])
     redemption_log = data.get("redemption_log", [])
 
-    total_earned = data.get("total_earned", 0)
-
-    # streak 计算（含 action_log + resistance_log）
+    # 活跃天数 / 连续记录（含 action_log + resistance_log）
     daily_set = set(e.get("time", "")[:10] for e in action_log if e.get("time"))
     daily_set |= set(e.get("time", "")[:10] for e in resistance_log if e.get("time"))
     active_days = len(daily_set)
 
     today_str = now_local().strftime("%Y-%m-%d")
+    today_date = now_local().date()
     today_actions = [e for e in action_log if e.get("time", "")[:10] == today_str and e.get("source", SOURCE_TASK) not in (SOURCE_ACH, SOURCE_CHECKIN)]
     today_resist = [r for r in resistance_log if r.get("time", "")[:10] == today_str]
     today_total = sum(e.get("points", 0) for e in today_actions) + len(today_resist)
     today_attrs = set(e.get("attribute", "") for e in today_actions if e.get("points", 0) > 0)
     if today_resist:
         today_attrs.add("Willpower")
-    all_four = all(a in today_attrs for a in ["Productivity", "Creativity", "Willpower", "Vitality"])
+    all_four = all(a in today_attrs for a in VALID_ATTRS)
 
-    today_date = now_local().date()
     streak = calc_streak(daily_set, today_date)
 
     stat_vals = [v for v in data.get("stats", {}).values() if isinstance(v, (int, float))]
@@ -345,7 +460,6 @@ def check_achievements(data, retroactive=False):
     min_stat = min(stat_vals) if stat_vals else 0
     has_backdated = any(e.get("backdated", False) for e in action_log)
 
-    # —— 新成就变量 ——
     # 心情统计
     mood_entries = [e for e in action_log if e.get("mood")]
     mood_count = len(mood_entries)
@@ -356,21 +470,19 @@ def check_achievements(data, retroactive=False):
     resist_dates = set(r.get("time", "")[:10] for r in resistance_log if r.get("time"))
     resistance_streak = calc_streak(resist_dates, today_date)
 
-    # 兑换总消耗
+    # 兑换
     total_consumed = sum(r.get("cost", 0) for r in redemption_log)
 
-    # 周报连续周数
-    reports = data.get("reports", [])
+    # 周报连续周数（ISO 周）
     week_mondays = []
-    for r in reports:
+    for r in data.get("reports", []):
         if r.get("type") == "weekly" and r.get("period_key"):
             pk = r["period_key"]
             try:
                 parts = pk.split("-W")
                 if len(parts) == 2:
                     year, week = int(parts[0]), int(parts[1])
-                    monday_date = datetime.strptime(f"{year}-W{week}-1", "%G-W%V-%u").date()
-                    week_mondays.append(monday_date)
+                    week_mondays.append(datetime.strptime(f"{year}-W{week}-1", "%G-W%V-%u").date())
             except (ValueError, IndexError):
                 continue
     week_mondays = sorted(set(week_mondays), reverse=True)
@@ -383,17 +495,13 @@ def check_achievements(data, retroactive=False):
             else:
                 break
 
-    # 本周总得分
-    monday = today_date - timedelta(days=today_date.weekday())
-    monday_str = monday.strftime("%Y-%m-%d")
+    # 本周总得分（不含成就与签到来源）
+    monday_str = (today_date - timedelta(days=today_date.weekday())).strftime("%Y-%m-%d")
     this_week_total = sum(
         e.get("points", 0) for e in action_log
         if e.get("time", "")[:10] >= monday_str
         and e.get("source", SOURCE_TASK) not in (SOURCE_ACH, SOURCE_CHECKIN)
-    ) + sum(
-        1 for r in resistance_log
-        if r.get("time", "")[:10] >= monday_str
-    )
+    ) + sum(1 for r in resistance_log if r.get("time", "")[:10] >= monday_str)
 
     # 本月活跃天数
     month_prefix = today_str[:7]
@@ -403,7 +511,7 @@ def check_achievements(data, retroactive=False):
     checkin_streak = get_checkin_streak(data)
     total_checkin_days = len(data.get("checkin_log", []))
 
-    # 东山再起：检查是否有 3+ 天的空档后重新记录
+    # 东山再起：3 天以上空档后重新记录
     has_comeback = False
     if len(daily_set) >= 2:
         sorted_dates = sorted(daily_set)
@@ -417,92 +525,96 @@ def check_achievements(data, retroactive=False):
             except ValueError:
                 continue
 
-    def build_conditions():
-        te = data.get("total_earned", 0)
-        return {
-            "hundred_pts":       te >= 100,
-            "five_hundred_pts":  te >= 500,
-            "thousand_pts":      te >= 1000,
-            "five_thousand_pts": te >= 5000,
-            "week_active":       active_days >= 7,
-            "month_active":      active_days >= 30,
-            "hundred_active":    active_days >= 100,
-            "resistance_10":     len(resistance_log) >= 10,
-            "resistance_30":     len(resistance_log) >= 30,
-            "redeem_5":          len(redemption_log) >= 5,
-            "redeem_10":         len(redemption_log) >= 10,
-            "daily_30":          today_total >= 30,
-            "daily_50":          today_total >= 50,
-            "daily_100":         today_total >= 100,
-            "daily_balanced":    all_four,
-            "daily_5_records":   len(today_actions) + len(today_resist) >= 5,
-            "first_task":        len([e for e in action_log if e.get("source", SOURCE_TASK) not in (SOURCE_ACH, SOURCE_CHECKIN)]) >= 1,
-            "first_resistance":  len(resistance_log) >= 1,
-            "first_redeem":      len(redemption_log) >= 1,
-            "first_backdate":    has_backdated,
-            "streak_7":          streak >= 7,
-            "streak_30":         streak >= 30,
-            "stat_100":          max_stat >= 100,
-            "stat_500":          max_stat >= 500,
-            # —— 心情系列 ——
-            "mood_10":           mood_count >= 10,
-            "mood_50":           mood_count >= 50,
-            "mood_streak_7":     mood_streak >= 7,
-            # —— 全属性里程碑 ——
-            "all_attr_lv10":     min_stat >= 500,
-            "all_attr_lv15":     min_stat >= 750,
-            "all_attr_lv20":     min_stat >= 1000,
-            "all_attr_lv30":     min_stat >= 1500,
-            "all_attr_lv40":     min_stat >= 2000,
-            # —— 活跃里程碑 ——
-            "active_50":         active_days >= 50,
-            "active_150":        active_days >= 150,
-            "active_299":        active_days >= 299,
-            "active_365":        active_days >= 365,
-            # —— 阻力复盘进阶 ——
-            "resistance_50":     len(resistance_log) >= 50,
-            "resistance_100":    len(resistance_log) >= 100,
-            "resistance_streak_7": resistance_streak >= 7,
-            # —— 积分里程碑 ——
-            "two_thousand_pts":  te >= 2000,
-            "ten_thousand_pts":  te >= 10000,
-            # —— 兑换消耗 ——
-            "consumed_500":      total_consumed >= 500,
-            "consumed_1000":     total_consumed >= 1000,
-            "consumed_2000":     total_consumed >= 2000,
-            "consumed_5000":     total_consumed >= 5000,
-            # —— 其他 ——
-            "weekly_report_4":   weekly_report_streak >= 4,
-            "weekly_200":        this_week_total >= 200,
-            "monthly_20":        monthly_active_days >= 20,
-            "comeback_3day":     has_comeback,
-            # —— 签到系列 ——
-            "checkin_30":        checkin_streak >= 30,
-            "checkin_50":        checkin_streak >= 50,
-            "checkin_100":       checkin_streak >= 100,
-            "checkin_222":       checkin_streak >= 222,
-            "checkin_total_100": total_checkin_days >= 100,
-            "checkin_total_222": total_checkin_days >= 222,
-            "checkin_total_365": total_checkin_days >= 365,
-        }
+    # —— 记录条数 / 补记 / 时段（不含成就与签到来源） ——
+    task_actions = [e for e in action_log if e.get("source", SOURCE_TASK) not in (SOURCE_ACH, SOURCE_CHECKIN)]
+    backdate_count = sum(1 for e in task_actions if e.get("backdated", False))
+    early_bird_count = 0
+    night_owl_count = 0
+    for e in task_actions:
+        try:
+            hour = int(e.get("time", "")[11:13])
+        except (ValueError, TypeError):
+            continue
+        if 5 <= hour < 8:
+            early_bird_count += 1
+        elif hour >= 22:
+            night_owl_count += 1
 
+    total_earned = data.get("total_earned", 0)
+    return {
+        "total_earned": total_earned,
+        "total_level": total_earned // 100,
+        "active_days": active_days,
+        "monthly_active_days": monthly_active_days,
+        "streak": streak,
+        "max_stat": max_stat,
+        "min_stat": min_stat,
+        "resistance_count": len(resistance_log),
+        "resistance_streak": resistance_streak,
+        "redeem_count": len(redemption_log),
+        "total_consumed": total_consumed,
+        "today_total": today_total,
+        "today_records": len(today_actions) + len(today_resist),
+        "all_four": all_four,
+        "this_week_total": this_week_total,
+        "task_count": len(task_actions),
+        "total_records": len(task_actions) + len(resistance_log),
+        "has_backdated": has_backdated,
+        "backdate_count": backdate_count,
+        "early_bird_count": early_bird_count,
+        "night_owl_count": night_owl_count,
+        "mood_count": mood_count,
+        "mood_streak": mood_streak,
+        "weekly_report_streak": weekly_report_streak,
+        "checkin_streak": checkin_streak,
+        "total_checkin_days": total_checkin_days,
+        "has_comeback": has_comeback,
+    }
+
+
+def check_achievements(data, retroactive=False):
+    """检查并解锁成就。retroactive=True 时标记为追溯解锁（仍发 bonus 积分）。
+    解锁 bonus 只计入 total_earned，可能触发连锁解锁（如 bonus 跨过下一个总分门槛）。"""
+    achievements = data.get("achievements", [])
+    if not achievements or all(a.get("unlocked") for a in achievements):
+        return []  # 没有成就或已全部解锁：跳过全量日志扫描
+
+    metrics = compute_achievement_metrics(data)
     newly_unlocked = []
-    changed = True
-    while changed:
-        changed = False
-        conditions = build_conditions()
-        for ach in data.get("achievements", []):
-            if ach["unlocked"]:
-                continue
-            if conditions.get(ach["id"], False):
-                ach["unlocked"] = True
-                ach["unlocked_time"] = now_str()
-                entry = add_points(data, "", ach["bonus"], "🏅 成就解锁：" + ach["name"], source=SOURCE_ACH)
-                entry["retroactive"] = retroactive
-                newly_unlocked.append(ach)
-                changed = True
-
+    while True:
+        unlocked_now = _unlock_pass(data, metrics, retroactive)
+        if not unlocked_now:
+            break
+        # bonus 不写属性、不写当日得分，只影响总分/等级门槛 → 增量更新后重试，避免全量重扫
+        for ach in unlocked_now:
+            metrics["total_earned"] += ach.get("bonus", 0)
+        metrics["total_level"] = metrics["total_earned"] // 100
+        newly_unlocked.extend(unlocked_now)
     return newly_unlocked
+
+
+def _unlock_pass(data, metrics, retroactive):
+    """按 ACH_TARGETS 逐项比较指标与阈值，解锁所有当前满足条件的成就（单轮）。"""
+    unlocked_now = []
+    for ach in data.get("achievements", []):
+        if ach.get("unlocked"):
+            continue
+        target = ACH_TARGETS.get(ach.get("id"))
+        if target is None:
+            continue
+        metric_key, threshold = target
+        value = metrics.get(metric_key, 0)
+        if metric_key in _BOOL_METRICS:
+            satisfied = bool(value)
+        else:
+            satisfied = value >= threshold
+        if satisfied:
+            ach["unlocked"] = True
+            ach["unlocked_time"] = now_str()
+            entry = add_points(data, "", ach.get("bonus", 0), "🏅 成就解锁：" + ach["name"], source=SOURCE_ACH)
+            entry["retroactive"] = retroactive
+            unlocked_now.append(ach)
+    return unlocked_now
 
 
 # ---------- 每日签到系统 ----------
@@ -3229,86 +3341,129 @@ if page == "⚙️ 设置":
 
 # ════════ Tab 6：成就 ════════
 if page == "🏅 成就":
-        st.markdown("### 🏅 成就")
+    st.markdown("### 🏅 成就")
 
-        achievements = data.get("achievements", [])
-        unlocked = [a for a in achievements if a.get("unlocked")]
-        total_bonus = sum(a.get("bonus", 0) for a in unlocked)
+    achievements = data.get("achievements", [])
+    unlocked = [a for a in achievements if a.get("unlocked")]
+    total_bonus = sum(a.get("bonus", 0) for a in unlocked)
 
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            st.metric("🏅 已解锁", f"{len(unlocked)} / {len(achievements)}")
-        with c2:
-            st.metric("💰 成就积分", str(total_bonus))
-        with c3:
-            st.metric("📊 完成度", f"{int(len(unlocked) / max(len(achievements), 1) * 100)}%")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.metric("🏅 已解锁", f"{len(unlocked)} / {len(achievements)}")
+    with c2:
+        st.metric("💰 成就积分", str(total_bonus))
+    with c3:
+        st.metric("📊 完成度", f"{int(len(unlocked) / max(len(achievements), 1) * 100)}%")
 
-        st.progress(len(unlocked) / max(len(achievements), 1))
-        st.markdown("---")
+    st.progress(len(unlocked) / max(len(achievements), 1))
+    st.markdown("---")
 
-        cat_labels = {
-            "cumulative": "📈 累积型成就",
-            "daily": "📅 单日型成就",
-            "special": "🎯 特殊行为型成就",
-            "mood": "🎭 心情系列成就",
-            "milestone": "🎯 里程碑成就",
-            "checkin": "📋 签到系列成就",
-        }
-        cat_colors = {
-            "cumulative": "#58CC02",
-            "daily": "#1CB0F6",
-            "special": "#CE82FF",
-            "mood": "#FF6B9D",
-            "milestone": "#FFA500",
-            "checkin": "#20B2AA",
-        }
+    # 指标算一次，供锁定成就显示进度（与判定共用同一来源）
+    ach_metrics = compute_achievement_metrics(data)
+    today_for_new = now_local().date()
 
-        for cat in ["cumulative", "daily", "special", "mood", "milestone", "checkin"]:
-            cat_achs = [a for a in achievements if a.get("category") == cat]
-            if not cat_achs:
-                continue
-            # 同类成就按 bonus 升序排列（简单的在前）
-            cat_achs = sorted(cat_achs, key=lambda a: a.get("bonus", 0))
-            st.markdown(f"#### {cat_labels.get(cat, cat)}")
+    cat_labels = {
+        "cumulative": "📈 累积型成就",
+        "daily": "📅 单日型成就",
+        "special": "🎯 特殊行为型成就",
+        "mood": "🎭 心情系列成就",
+        "milestone": "🎯 里程碑成就",
+        "checkin": "📋 签到系列成就",
+    }
+    cat_colors = {
+        "cumulative": "#58CC02",
+        "daily": "#1CB0F6",
+        "special": "#CE82FF",
+        "mood": "#FF6B9D",
+        "milestone": "#FFA500",
+        "checkin": "#20B2AA",
+    }
 
-            badges_html = '<div style="display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px;">'
-            for ach in cat_achs:
-                parts = ach["name"].split(" ", 1)
-                emoji = parts[0] if len(parts) > 1 else "🏅"
-                name = parts[1] if len(parts) > 1 else ach["name"]
-                color = cat_colors.get(cat, "#888")
+    for cat in ["cumulative", "daily", "special", "mood", "milestone", "checkin"]:
+        cat_achs = [a for a in achievements if a.get("category") == cat]
+        if not cat_achs:
+            continue
+        # 同类成就按 bonus 升序排列（简单的在前）
+        cat_achs = sorted(cat_achs, key=lambda a: a.get("bonus", 0))
+        st.markdown(f"#### {cat_labels.get(cat, cat)}")
 
-                if ach.get("unlocked"):
-                    badges_html += (
-                        f'<div title="{ach["desc"]}" '
-                        f'style="flex: 1 1 120px; min-width: 110px; '
-                        f'background: linear-gradient(135deg, {color}22, {color}08); '
-                        f'border: 1.5px solid {color}55; border-radius: 10px; '
-                        f'padding: 10px 6px; text-align: center; transition: transform 0.15s;">'
-                        f'<div style="font-size: 1.8rem; margin-bottom: 2px;">{emoji}</div>'
-                        f'<div style="font-weight: 700; font-size: 0.82rem; line-height: 1.3;">{name}</div>'
-                        f'<div style="font-size: 0.72rem; color: {color}; font-weight: 600;">+{ach["bonus"]} pts</div>'
+        badges_html = '<div style="display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px;">'
+        for ach in cat_achs:
+            parts = ach["name"].split(" ", 1)
+            emoji = parts[0] if len(parts) > 1 else "🏅"
+            name = parts[1] if len(parts) > 1 else ach["name"]
+            color = cat_colors.get(cat, "#888")
+            desc = str(ach.get("desc", ""))
+
+            # 锁定成就的进度（有数值阈值的成就才显示）
+            progress_html = ""
+            target = ACH_TARGETS.get(ach.get("id"))
+            if target is not None:
+                metric_key, threshold = target
+                if metric_key not in _BOOL_METRICS and threshold > 0:
+                    cur_val = ach_metrics.get(metric_key, 0)
+                    pct = int(min(cur_val / threshold, 1.0) * 100)
+                    progress_html = (
+                        f'<div style="font-size: 0.66rem; color: #999; margin-top: 2px;">{cur_val} / {threshold}</div>'
+                        f'<div style="height: 3px; background: rgba(128,128,128,0.18); border-radius: 2px; margin-top: 2px; overflow: hidden;">'
+                        f'<div style="width: {pct}%; height: 3px; background: {color};"></div>'
                         f'</div>'
                     )
-                else:
-                    badges_html += (
-                        f'<div title="{ach["desc"]}" '
-                        f'style="flex: 1 1 120px; min-width: 110px; '
-                        f'background: rgba(128,128,128,0.06); '
-                        f'border: 1.5px solid rgba(128,128,128,0.15); border-radius: 10px; '
-                        f'padding: 10px 6px; text-align: center; opacity: 0.45; filter: grayscale(0.7);">'
-                        f'<div style="font-size: 1.8rem; margin-bottom: 2px;">🔒</div>'
-                        f'<div style="font-weight: 700; font-size: 0.82rem; line-height: 1.3; color: #888;">{name}</div>'
-                        f'<div style="font-size: 0.72rem; color: #aaa;">+{ach["bonus"]} pts</div>'
-                        f'</div>'
-                    )
-            badges_html += '</div>'
-            st.markdown(badges_html, unsafe_allow_html=True)
 
-            st.markdown("")
+            if ach.get("unlocked"):
+                # 7 天内解锁的加 NEW 角标和高亮描边
+                is_new = False
+                unlock_date_str = str(ach.get("unlocked_time", ""))[:10]
+                unlock_label = unlock_date_str[5:] if len(unlock_date_str) == 10 else ""
+                if unlock_date_str:
+                    try:
+                        is_new = (today_for_new - datetime.strptime(unlock_date_str, "%Y-%m-%d").date()).days < 7
+                    except ValueError:
+                        is_new = False
+                new_badge = (
+                    '<span style="position: absolute; top: -7px; right: -6px; '
+                    'background: #ff5c5c; color: #fff; font-size: 0.6rem; font-weight: 700; '
+                    'padding: 1px 5px; border-radius: 999px;">NEW</span>'
+                ) if is_new else ""
+                date_html = (
+                    f'<div style="font-size: 0.64rem; color: {color}; opacity: 0.85; margin-top: 1px;">{unlock_label}</div>'
+                ) if unlock_label else ""
+                border = "2px solid #ff5c5c;" if is_new else f"1.5px solid {color}55;"
+                badges_html += (
+                    f'<div title="{desc}" '
+                    f'style="flex: 1 1 120px; min-width: 110px; position: relative; '
+                    f'background: linear-gradient(135deg, {color}22, {color}08); '
+                    f'border: {border} border-radius: 10px; '
+                    f'padding: 10px 6px; text-align: center;">'
+                    f'{new_badge}'
+                    f'<div style="font-size: 1.8rem; margin-bottom: 2px;">{emoji}</div>'
+                    f'<div style="font-weight: 700; font-size: 0.82rem; line-height: 1.3;">{name}</div>'
+                    f'<div style="font-size: 0.68rem; opacity: 0.75; line-height: 1.3;">{desc}</div>'
+                    f'<div style="font-size: 0.72rem; color: {color}; font-weight: 600; margin-top: 2px;">+{ach["bonus"]} pts</div>'
+                    f'{date_html}'
+                    f'</div>'
+                )
+            else:
+                badges_html += (
+                    f'<div title="{desc}" '
+                    f'style="flex: 1 1 120px; min-width: 110px; '
+                    f'background: rgba(128,128,128,0.06); '
+                    f'border: 1.5px solid rgba(128,128,128,0.15); border-radius: 10px; '
+                    f'padding: 10px 6px; text-align: center; opacity: 0.55;">'
+                    f'<div style="font-size: 1.8rem; margin-bottom: 2px;">🔒</div>'
+                    f'<div style="font-weight: 700; font-size: 0.82rem; line-height: 1.3; color: #888;">{name}</div>'
+                    f'<div style="font-size: 0.68rem; color: #999; line-height: 1.3;">{desc}</div>'
+                    f'<div style="font-size: 0.72rem; color: #aaa; margin-top: 2px;">+{ach["bonus"]} pts</div>'
+                    f'{progress_html}'
+                    f'</div>'
+                )
+        badges_html += '</div>'
+        st.markdown(badges_html, unsafe_allow_html=True)
+
+        st.markdown("")
 
 
-    # ════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════
 #  ⚔️ 属性面板（回填到页面顶部占位，读取最新 data → 即时刷新）
 # ════════════════════════════════════════════════════════
 with stats_placeholder:
