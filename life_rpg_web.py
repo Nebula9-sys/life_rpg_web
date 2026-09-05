@@ -369,7 +369,7 @@ def check_achievements(data, retroactive=False):
                 parts = pk.split("-W")
                 if len(parts) == 2:
                     year, week = int(parts[0]), int(parts[1])
-                    monday_date = datetime.strptime(f"{year}-W{week}-1", "%Y-W%W-%w").date()
+                    monday_date = datetime.strptime(f"{year}-W{week}-1", "%G-W%V-%u").date()
                     week_mondays.append(monday_date)
             except (ValueError, IndexError):
                 continue
@@ -906,24 +906,16 @@ def get_sb_client():
 
 
 def _sb_refresh_auth():
-    """token 失效时：先试 refresh，失败再用 session 内凭据静默重登"""
+    """token 失效时用 refresh token 续期（由 Supabase SDK 自动保管，无需保存明文密码）"""
     sb = get_sb_client()
     if sb is None:
         return False
     try:
         sb.auth.refresh_session()
         return True
-    except Exception:
-        email = st.session_state.get("sb_email")
-        pwd = st.session_state.get("sb_pwd")
-        if not email or not pwd:
-            return False
-        try:
-            sb.auth.sign_in_with_password({"email": email, "password": pwd})
-            return True
-        except Exception as e:
-            print(f"[supabase re-auth] {e!r}")
-            return False
+    except Exception as e:
+        print(f"[supabase refresh] {e!r}")
+        return False
 
 
 def _sb_is_auth_error(e):
@@ -952,27 +944,80 @@ def cloud_load():
     return None
 
 
-def cloud_save(data):
-    """把整份存档 upsert 到 Supabase 当前用户的行"""
+def _cloud_read_rev(sb, uid):
+    """轻量读取云端 rev（不下载整份存档）；行不存在返回 None"""
+    res = sb.table(SB_TABLE).select("data->>rev").eq("id", uid).single().execute()
+    if isinstance(res.data, dict) and res.data.get("rev") is not None:
+        return int(res.data["rev"])
+    return None
+
+
+def _cloud_write(data, uid, force=False):
+    """底层写入。force=True 直接覆盖；否则先核对云端 rev，
+    云端已被其他设备写过（rev 不等于本地保存前版本）时返回 False。"""
     sb = get_sb_client()
-    uid = st.session_state.get("uid")
-    if sb is None or not uid:
+    if sb is None:
         return False
-    payload = {
-        "id": uid,
-        "data": data,
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-    }
+    updated_at = datetime.now(timezone.utc).isoformat()
+    rev = int(data.get("rev", 0))
     for attempt in range(2):
         try:
-            sb.table(SB_TABLE).upsert(payload, on_conflict="id").execute()
+            if force:
+                sb.table(SB_TABLE).upsert(
+                    {"id": uid, "data": data, "updated_at": updated_at},
+                    on_conflict="id",
+                ).execute()
+                return True
+            try:
+                cloud_rev = _cloud_read_rev(sb, uid)
+            except Exception as e:
+                if "PGRST116" in (getattr(e, "code", "") or "") or "PGRST116" in str(e):
+                    # 云端行不存在：首次保存，直接插入
+                    sb.table(SB_TABLE).insert(
+                        {"id": uid, "data": data, "updated_at": updated_at}
+                    ).execute()
+                    return True
+                raise
+            if cloud_rev is None or cloud_rev != rev - 1:
+                return False  # 云端版本与本地预期不符：另一台设备写过
+            sb.table(SB_TABLE).update(
+                {"data": data, "updated_at": updated_at}
+            ).eq("id", uid).execute()
             return True
         except Exception as e:
             if attempt == 0 and _sb_is_auth_error(e) and _sb_refresh_auth():
                 continue
-            print(f"[cloud_save] {e!r}")
+            print(f"[cloud_write] {e!r}")
             return False
     return False
+
+
+def cloud_save(data):
+    """把整份存档写入 Supabase 当前用户的行（带多设备冲突保护）。
+    云端版本与本地预期不符时，自动拉云端做并集合并后回写，合并结果原地更新 data。"""
+    uid = st.session_state.get("uid")
+    if get_sb_client() is None or not uid:
+        return False
+    if _cloud_write(data, uid):
+        return True
+    # rev 冲突：云端有其他设备写入的新数据，合并后强制回写
+    try:
+        cloud_data = cloud_load()
+        if cloud_data is None:
+            return _cloud_write(data, uid, force=True)
+        merged, _, _ = merge_data(data, cloud_data)
+        merged["rev"] = int(cloud_data.get("rev", 0)) + 1
+        merged["saved_at"] = now_str()
+        if not _cloud_write(merged, uid, force=True):
+            return False
+        data.clear()
+        data.update(merged)
+        local_save(data)
+        st.toast("🔀 检测到其他设备的更改，已自动合并保存", icon="🔀")
+        return True
+    except Exception as e:
+        print(f"[cloud_save merge] {e!r}")
+        return False
 
 
 def jsonbin_load():
@@ -996,24 +1041,35 @@ def jsonbin_load():
     return None
 
 
+def _local_file():
+    """本地存档文件名：登录后按用户隔离，避免云部署多用户共用容器磁盘时串档"""
+    uid = st.session_state.get("uid")
+    return f"life_rpg_save_{uid[:8]}.json" if uid else LOCAL_FILE
+
+
 def local_load():
-    if os.path.exists(LOCAL_FILE):
-        try:
-            with open(LOCAL_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if isinstance(data, dict):
-                    return data
-        except Exception as e:
-            print(f"[local_load] {e!r}")
+    candidates = [_local_file()]
+    if candidates[0] != LOCAL_FILE and os.path.exists(LOCAL_FILE):
+        candidates.append(LOCAL_FILE)  # 兼容旧版单文件存档（按用户隔离前的遗留）
+    for path in candidates:
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if isinstance(data, dict):
+                        return data
+            except Exception as e:
+                print(f"[local_load] {e!r}")
     return None
 
 
 def local_save(data):
+    path = _local_file()
     try:
-        tmp = LOCAL_FILE + ".tmp"
+        tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, LOCAL_FILE)
+        os.replace(tmp, path)
         return True
     except Exception as e:
         st.error(f"⚠️ 本地保存失败：{e}")
@@ -1098,6 +1154,11 @@ def _migrate_data(data):
     # 给旧记录补唯一 ID（云存档合并去重用）
     for key in ("action_log", "resistance_log", "redemption_log"):
         _ensure_ids(data.get(key, []))
+    # 清理历史遗留的重复签到日期（多设备竞态可能写入重复项，重复会虚增"累计签到"成就进度）
+    if isinstance(data.get("checkin_log"), list):
+        data["checkin_log"] = sorted(set(data["checkin_log"]))
+    if isinstance(data.get("repaired_checkins"), list):
+        data["repaired_checkins"] = sorted(set(data["repaired_checkins"]))
     # 补签卡：按历史真实签到数折算赠送进度（静默，老用户登录即直接持有应得的卡）
     _cards = data.setdefault("checkin_cards", {"bought": 0, "used": 0, "earned_seen": 0})
     _derived_cards = real_checkin_count(data) // 30
@@ -1160,8 +1221,8 @@ def load_data():
 def save_data(data):
     data["rev"] = int(data.get("rev", 0)) + 1
     data["saved_at"] = now_str()
+    local_ok = local_save(data)  # 本地先落盘（不依赖网络，速度最快）
     cloud_ok = cloud_save(data)
-    local_ok = local_save(data)
     if cloud_ok:
         st.session_state["cloud_dirty"] = False
     elif get_sb_client() is not None and st.session_state.get("uid"):
@@ -1549,8 +1610,7 @@ if not st.session_state.authed:
                     if resp.user is not None:
                         st.session_state["uid"] = resp.user.id
                         st.session_state["user_email"] = resp.user.email or email.strip()
-                        st.session_state["sb_email"] = email.strip()
-                        st.session_state["sb_pwd"] = pwd
+                        # 不保存明文密码：token 过期由 Supabase SDK 的 refresh token 自动续期
                         _login_ok = True
                 except Exception as e:
                     _s = str(e).lower()
@@ -1561,7 +1621,8 @@ if not st.session_state.authed:
                     elif "invalid login" in _s or "credentials" in _s or "password" in _s or "401" in _s:
                         st.error("❌ 邮箱或密码错误：账号必须是本项目 Authentication → Users 列表里已有的那个（Supabase 网站登录密码不算）")
                     else:
-                        st.error(f"❌ 登录失败（网络/服务异常）：{e}")
+                        print(f"[login] {e!r}")
+                        st.error("❌ 登录失败（网络/服务异常）：请检查网络后重试；若持续失败，请查看服务端日志获取原因")
                 if _login_ok:
                     with st.spinner("读取存档中..."):
                         try:
@@ -1760,7 +1821,8 @@ with st.sidebar:
         _next_reward = get_checkin_reward(_next_streak)
         if st.button(f"📋 签到领 +{_next_reward} pts", use_container_width=True, type="primary"):
             today_ds = now_local().strftime("%Y-%m-%d")
-            data.setdefault("checkin_log", []).append(today_ds)
+            if today_ds not in data.setdefault("checkin_log", []):
+                data["checkin_log"].append(today_ds)
             _new_streak = get_checkin_streak(data)
             _reward = get_checkin_reward(_new_streak)
             add_points(data, "", _reward, f"📅 每日签到（连续{_new_streak}天）", source=SOURCE_CHECKIN)
@@ -1814,8 +1876,10 @@ with st.sidebar:
     _repair_gap = find_repairable_gap(data)
     if _repair_gap:
         if st.button(f"🎫 补签 {_repair_gap}（用 1 张卡）", disabled=(_avail_cards < 1), use_container_width=True):
-            data.setdefault("checkin_log", []).append(_repair_gap)
-            data.setdefault("repaired_checkins", []).append(_repair_gap)
+            if _repair_gap not in data.setdefault("checkin_log", []):
+                data["checkin_log"].append(_repair_gap)
+            if _repair_gap not in data.setdefault("repaired_checkins", []):
+                data["repaired_checkins"].append(_repair_gap)
             data.setdefault("checkin_cards", {})["used"] = int(_cards.get("used", 0)) + 1
             data.setdefault("card_log", []).append({"time": now_str(), "action": "use", "detail": _repair_gap})
             newly = check_achievements(data)
@@ -1852,6 +1916,8 @@ with st.sidebar:
         save_data(data)
         st.session_state.authed = False
         st.session_state.data = None
+        st.session_state.pop("sb_email", None)
+        st.session_state.pop("sb_pwd", None)
         st.rerun()
     if st.button("🚪 退出账号", use_container_width=True):
         save_data(data)
@@ -1881,410 +1947,493 @@ total = data.get("total_earned", 0) - total_spent
 
 st.markdown("---")
 
-# -------- 功能标签页 --------
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(
-    ["📝 记录任务", "🚧 阻力复盘", "🏆 奖励商店", "📋 历史日志", "📊 统计", "🏅 成就", "⚙️ 设置"]
-)
+# -------- 功能页导航（只渲染当前页，避免每次点击整页重算）--------
+PAGES = ['📝 记录任务', '🚧 阻力复盘', '🏆 奖励商店', '📋 历史日志', '📊 统计', '🏅 成就', '⚙️ 设置']
+page = st.radio("功能页", PAGES, horizontal=True, key="page_nav")
 
 
 # ════════ Tab 1：记录任务 ════════
-with tab1:
-    show_flash_message("record")
-    st.markdown("### 📝 记录完成的任务")
-    st.caption("每完成一件事，就赚一点经验值。积少成多。")
+if page == "📝 记录任务":
+        show_flash_message("record")
+        st.markdown("### 📝 记录完成的任务")
+        st.caption("每完成一件事，就赚一点经验值。积少成多。")
 
-    # ---------- 快捷记录 ----------
-    st.markdown("#### 🐾 我动了一下")
-    st.caption("低能量时，点一下也算数。不想写也可以，这就是一次微小启动。")
+        # ---------- 快捷记录 ----------
+        st.markdown("#### 🐾 我动了一下")
+        st.caption("低能量时，点一下也算数。不想写也可以，这就是一次微小启动。")
 
-    quick_actions = data.get("quick_actions", [])
+        quick_actions = data.get("quick_actions", [])
 
-    # 心情选择器（全局，适用于下方所有快捷按钮）
-    quick_mood = st.selectbox("当前心情", MOOD_OPTIONS, index=0, key="quick_mood", label_visibility="collapsed")
+        # 心情选择器（全局，适用于下方所有快捷按钮）
+        quick_mood = st.selectbox("当前心情", MOOD_OPTIONS, index=0, key="quick_mood", label_visibility="collapsed")
 
-    attr_icon_map = {
-        "Productivity": "⚡",
-        "Creativity": "💡",
-        "Willpower": "🔥",
-        "Vitality": "💚",
-    }
+        attr_icon_map = {
+            "Productivity": "⚡",
+            "Creativity": "💡",
+            "Willpower": "🔥",
+            "Vitality": "💚",
+        }
 
-    if not quick_actions:
-        st.info("还没有快捷按钮。可以去「设置」里添加常用动作。")
-    else:
-        # 每行 2 个按钮：手机端更稳定、更好按
-        for row_start in range(0, len(quick_actions), 2):
-            cols = st.columns(2)
-            for j, action in enumerate(quick_actions[row_start:row_start + 2]):
-                idx = row_start + j
-                name = action.get("name", "未命名动作")
-                attr_key = action.get("attribute", "Productivity")
-                if attr_key not in VALID_ATTRS:
-                    attr_key = "Productivity"
-                try:
-                    points = max(int(action.get("points", 1)), 1)
-                except (ValueError, TypeError):
-                    points = 1
-                icon = attr_icon_map.get(attr_key, "✨")
+        if not quick_actions:
+            st.info("还没有快捷按钮。可以去「设置」里添加常用动作。")
+        else:
+            # 每行 2 个按钮：手机端更稳定、更好按
+            for row_start in range(0, len(quick_actions), 2):
+                cols = st.columns(2)
+                for j, action in enumerate(quick_actions[row_start:row_start + 2]):
+                    idx = row_start + j
+                    name = action.get("name", "未命名动作")
+                    attr_key = action.get("attribute", "Productivity")
+                    if attr_key not in VALID_ATTRS:
+                        attr_key = "Productivity"
+                    try:
+                        points = max(int(action.get("points", 1)), 1)
+                    except (ValueError, TypeError):
+                        points = 1
+                    icon = attr_icon_map.get(attr_key, "✨")
 
-                with cols[j]:
-                    btn_label = f"{name}\n{icon}+{points}"
-                    if st.button(btn_label, key="quick_action_" + str(idx), use_container_width=True):
-                        add_points(data, attr_key, points, "快捷记录：" + name, mood=quick_mood)
+                    with cols[j]:
+                        btn_label = f"{name}\n{icon}+{points}"
+                        if st.button(btn_label, key="quick_action_" + str(idx), use_container_width=True):
+                            add_points(data, attr_key, points, "快捷记录：" + name, mood=quick_mood)
 
-                        newly = check_achievements(data)
-                        save_data(data)
-                        st.session_state.data = data
+                            newly = check_achievements(data)
+                            save_data(data)
+                            st.session_state.data = data
 
-                        new_val = data["stats"][attr_key]
-                        msg = encouragement_for(attr_key)
-                        _flash = f"✅ {name} | +{points} {attr_key}，当前 {new_val}\n\n{msg}"
-                        if newly:
-                            _ach_names = "、".join(a["name"] for a in newly)
-                            _flash += f"\n\n🏅 成就解锁：{_ach_names}"
-                        flash_success(_flash, icon="🐾", position="record", balloons=(points >= 10 or bool(newly)))
-                        st.rerun()
+                            new_val = data["stats"][attr_key]
+                            msg = encouragement_for(attr_key)
+                            _flash = f"✅ {name} | +{points} {attr_key}，当前 {new_val}\n\n{msg}"
+                            if newly:
+                                _ach_names = "、".join(a["name"] for a in newly)
+                                _flash += f"\n\n🏅 成就解锁：{_ach_names}"
+                            flash_success(_flash, icon="🐾", position="record", balloons=(points >= 10 or bool(newly)))
+                            st.rerun()
 
-    st.markdown("---")
+        st.markdown("---")
 
-    # ---------- 详细记录 ----------
-    with st.expander("✍️ 想写详细一点？展开详细记录", expanded=False):
-        st.caption("如果你有余力，可以把这次行动记录得更具体。没有余力也没关系，快捷记录已经算数。")
+        # ---------- 详细记录 ----------
+        with st.expander("✍️ 想写详细一点？展开详细记录", expanded=False):
+            st.caption("如果你有余力，可以把这次行动记录得更具体。没有余力也没关系，快捷记录已经算数。")
 
-        c1, c2 = st.columns(2)
-        with c1:
-            attr_choice = st.selectbox(
-                "提升哪个属性？",
-                [
-                    "⚡ 生产力 (Productivity)",
-                    "💡 创造力 (Creativity)",
-                    "🔥 意志力 (Willpower)",
-                    "💚 精力 (Vitality)",
-                ],
-                key="task_attr",
+            c1, c2 = st.columns(2)
+            with c1:
+                attr_choice = st.selectbox(
+                    "提升哪个属性？",
+                    [
+                        "⚡ 生产力 (Productivity)",
+                        "💡 创造力 (Creativity)",
+                        "🔥 意志力 (Willpower)",
+                        "💚 精力 (Vitality)",
+                    ],
+                    key="task_attr",
+                )
+            with c2:
+                diff_choice = st.selectbox(
+                    "任务难度",
+                    ["🟢 小事 → +5", "🟡 普通 → +10", "🔴 突破 → +20"],
+                    key="task_diff",
+                )
+
+            task_desc = st.text_input(
+                "做了什么？",
+                placeholder="可以不写，点提交也算数。比如：完成了项目报告",
+                key="task_desc",
             )
-        with c2:
-            diff_choice = st.selectbox(
-                "任务难度",
-                ["🟢 小事 → +5", "🟡 普通 → +10", "🔴 突破 → +20"],
-                key="task_diff",
-            )
 
-        task_desc = st.text_input(
-            "做了什么？",
-            placeholder="可以不写，点提交也算数。比如：完成了项目报告",
-            key="task_desc",
+            c3a, c3b = st.columns(2)
+            with c3a:
+                task_mood = st.selectbox(
+                    "当时心情",
+                    MOOD_OPTIONS,
+                    index=0,
+                    key="task_mood",
+                )
+            with c3b:
+                task_date = st.date_input(
+                    "📅 这是哪天做的？",
+                    value=now_local().date(),
+                    key="task_date",
+                )
+            st.caption("默认是今天。如果是补记之前的事，可以改日期。")
+
+            if st.button("✅ 提交详细记录", use_container_width=True, type="primary"):
+                attr_map = {
+                    "⚡ 生产力 (Productivity)": "Productivity",
+                    "💡 创造力 (Creativity)": "Creativity",
+                    "🔥 意志力 (Willpower)": "Willpower",
+                    "💚 精力 (Vitality)": "Vitality",
+                }
+                diff_map = {
+                    "🟢 小事 → +5": 5,
+                    "🟡 普通 → +10": 10,
+                    "🔴 突破 → +20": 20,
+                }
+
+                attr_key = attr_map[attr_choice]
+                points = diff_map[diff_choice]
+
+                # 确定记录时间：补记日期用当天12:00，今天用当前时间
+                today_local = now_local().date()
+                is_backdated = task_date != today_local
+                if not is_backdated:
+                    task_time = now_str()
+                else:
+                    task_time = task_date.strftime("%Y-%m-%d") + " 12:00"
+
+                add_points(
+                    data, attr_key, points, task_desc or "(未填写)",
+                    mood=task_mood, backdated=is_backdated, time_str=task_time,
+                )
+
+                newly = check_achievements(data)
+                save_data(data)
+                st.session_state.data = data
+
+                new_val = data["stats"][attr_key]
+                msg = encouragement_for(attr_key)
+                _flash = f"🎉 +{points} {attr_key}！当前 {new_val}\n\n{msg}"
+                if newly:
+                    _ach_names = "、".join(a["name"] for a in newly)
+                    _flash += f"\n\n🏅 成就解锁：{_ach_names}"
+                flash_success(_flash, icon="✅", position="record", balloons=(points >= 20 or bool(newly)))
+                if "task_date" in st.session_state:
+                    del st.session_state["task_date"]
+                st.rerun()
+
+
+# ════════ Tab 2：阻力复盘 ════════
+if page == "🚧 阻力复盘":
+        show_flash_message("resistance")
+        st.markdown("### 🚧 阻力复盘")
+        st.info(
+            "💪 记录一次启动困难 → **+1 Willpower**\n\n面对问题本身就是勇气。写下来，下次就不怕了。"
         )
 
-        c3a, c3b = st.columns(2)
-        with c3a:
-            task_mood = st.selectbox(
-                "当时心情",
-                MOOD_OPTIONS,
-                index=0,
-                key="task_mood",
+        reason = st.selectbox(
+            "这次为什么启动困难？",
+            [
+                "🐌 拖延 — 就是想逃避",
+                "😴 疲劳 — 身体或精神累",
+                "📱 干扰 — 手机/环境分心",
+                "😰 恐惧 — 怕做不好",
+                "🤷 迷茫 — 不知道从哪开始",
+                "🧠 其他",
+            ],
+            key="resist_reason",
+        )
+
+        c3, c4 = st.columns(2)
+        with c3:
+            detail = st.text_area(
+                "发生了什么？", placeholder="越具体越好", key="resist_detail"
             )
-        with c3b:
-            task_date = st.date_input(
-                "📅 这是哪天做的？",
-                value=now_local().date(),
-                key="task_date",
-            )
-        st.caption("默认是今天。如果是补记之前的事，可以改日期。")
-
-        if st.button("✅ 提交详细记录", use_container_width=True, type="primary"):
-            attr_map = {
-                "⚡ 生产力 (Productivity)": "Productivity",
-                "💡 创造力 (Creativity)": "Creativity",
-                "🔥 意志力 (Willpower)": "Willpower",
-                "💚 精力 (Vitality)": "Vitality",
-            }
-            diff_map = {
-                "🟢 小事 → +5": 5,
-                "🟡 普通 → +10": 10,
-                "🔴 突破 → +20": 20,
-            }
-
-            attr_key = attr_map[attr_choice]
-            points = diff_map[diff_choice]
-
-            # 确定记录时间：补记日期用当天12:00，今天用当前时间
-            today_local = now_local().date()
-            is_backdated = task_date != today_local
-            if not is_backdated:
-                task_time = now_str()
-            else:
-                task_time = task_date.strftime("%Y-%m-%d") + " 12:00"
-
-            add_points(
-                data, attr_key, points, task_desc or "(未填写)",
-                mood=task_mood, backdated=is_backdated, time_str=task_time,
+        with c4:
+            strategy = st.text_area(
+                "💡 明天怎么做？", placeholder="改进策略", key="resist_strategy"
             )
 
+        if st.button("📝 记录复盘", use_container_width=True, type="primary"):
+            data["stats"]["Willpower"] += 1
+            data["total_earned"] += 1
+            data["resistance_log"].append(
+                {
+                    "id": new_entry_id(),
+                    "time": now_str(),
+                    "reason": reason,
+                    "detail": detail or "(未填写)",
+                    "strategy": strategy or "(未填写)",
+                }
+            )
             newly = check_achievements(data)
             save_data(data)
             st.session_state.data = data
 
-            new_val = data["stats"][attr_key]
-            msg = encouragement_for(attr_key)
-            _flash = f"🎉 +{points} {attr_key}！当前 {new_val}\n\n{msg}"
+            count = len(data["resistance_log"])
+            _flash = f"🔥 +1 Willpower | 直面阻力 {count} 次\n\n💪 记录阻力本身就是勇气，你做到了。"
             if newly:
                 _ach_names = "、".join(a["name"] for a in newly)
                 _flash += f"\n\n🏅 成就解锁：{_ach_names}"
-            flash_success(_flash, icon="✅", position="record", balloons=(points >= 20 or bool(newly)))
-            if "task_date" in st.session_state:
-                del st.session_state["task_date"]
+            flash_success(_flash, icon="💪", position="resistance", balloons=bool(newly))
             st.rerun()
-
-
-# ════════ Tab 2：阻力复盘 ════════
-with tab2:
-    show_flash_message("resistance")
-    st.markdown("### 🚧 阻力复盘")
-    st.info(
-        "💪 记录一次启动困难 → **+1 Willpower**\n\n面对问题本身就是勇气。写下来，下次就不怕了。"
-    )
-
-    reason = st.selectbox(
-        "这次为什么启动困难？",
-        [
-            "🐌 拖延 — 就是想逃避",
-            "😴 疲劳 — 身体或精神累",
-            "📱 干扰 — 手机/环境分心",
-            "😰 恐惧 — 怕做不好",
-            "🤷 迷茫 — 不知道从哪开始",
-            "🧠 其他",
-        ],
-        key="resist_reason",
-    )
-
-    c3, c4 = st.columns(2)
-    with c3:
-        detail = st.text_area(
-            "发生了什么？", placeholder="越具体越好", key="resist_detail"
-        )
-    with c4:
-        strategy = st.text_area(
-            "💡 明天怎么做？", placeholder="改进策略", key="resist_strategy"
-        )
-
-    if st.button("📝 记录复盘", use_container_width=True, type="primary"):
-        data["stats"]["Willpower"] += 1
-        data["total_earned"] += 1
-        data["resistance_log"].append(
-            {
-                "id": new_entry_id(),
-                "time": now_str(),
-                "reason": reason,
-                "detail": detail or "(未填写)",
-                "strategy": strategy or "(未填写)",
-            }
-        )
-        newly = check_achievements(data)
-        save_data(data)
-        st.session_state.data = data
-
-        count = len(data["resistance_log"])
-        _flash = f"🔥 +1 Willpower | 直面阻力 {count} 次\n\n💪 记录阻力本身就是勇气，你做到了。"
-        if newly:
-            _ach_names = "、".join(a["name"] for a in newly)
-            _flash += f"\n\n🏅 成就解锁：{_ach_names}"
-        flash_success(_flash, icon="💪", position="resistance", balloons=bool(newly))
-        st.rerun()
         
 # ════════ Tab 3：奖励商店 ════════
-with tab3:
-    show_flash_message("redeem")
-    _total_spent = sum(r.get("cost", 0) for r in data.get("redemption_log", []))
-    _total = data.get("total_earned", 0) - _total_spent
+if page == "🏆 奖励商店":
+        show_flash_message("redeem")
+        _total_spent = sum(r.get("cost", 0) for r in data.get("redemption_log", []))
+        _total = data.get("total_earned", 0) - _total_spent
 
-    st.markdown("### 🏆 奖励商店")
-    st.markdown(
-        "💰 **当前积分: "
-        + str(_total)
-        + "** — 同一个奖励可以反复兑换，每次都会扣积分"
-    )
-    st.markdown("---")
-
-    rewards = data.get("rewards", [])
-    redemption_log = data.get("redemption_log", [])
-
-    redeem_counts = {}
-    for r in redemption_log:
-        name = r.get("reward_name", "")
-        redeem_counts[name] = redeem_counts.get(name, 0) + 1
-
-    if not rewards:
-        st.warning("商店空空如也 → 去「设置」添加奖励")
-    else:
-        for i, reward in enumerate(rewards):
-            cost = max(reward.get("cost", 1), 1)
-            can_buy = _total >= cost
-            times = redeem_counts.get(reward.get("name", ""), 0)
-
-            col_info, col_btn = st.columns([3, 1])
-
-            with col_info:
-                st.markdown("🎁 **" + reward.get("name", "未命名") + "**")
-
-                if can_buy:
-                    cost_text = "✅ " + str(cost) + " pts"
-                else:
-                    cost_text = "❌ " + str(cost) + " pts（差 " + str(cost - _total) + "）"
-
-                if times > 0:
-                    times_text = "已兑 " + str(times) + " 次"
-                else:
-                    times_text = "尚未兑换"
-
-                st.caption(cost_text + " ｜ " + times_text)
-
-            with col_btn:
-                if can_buy:
-                    if st.button("兑换", key="r_" + str(i), type="primary", use_container_width=True):
-                        data["redemption_log"].append(
-                            {
-                                "id": new_entry_id(),
-                                "time": now_str(),
-                                "reward_name": reward.get("name", "未命名"),
-                                "cost": cost,
-                            }
-                        )
-                        newly = check_achievements(data)
-                        save_data(data)
-                        st.session_state.data = data
-                        _flash = f"🎉🎉🎉 **兑换成功！** {reward.get('name', '未命名')} — 好好享受！"
-                        if newly:
-                            _ach_names = "、".join(a["name"] for a in newly)
-                            _flash += f"\n\n🏅 成就解锁：{_ach_names}"
-                        flash_success(_flash, icon="🎁", position="redeem", balloons=bool(newly))
-                        st.rerun()
-                else:
-                    st.button("积分不够", disabled=True, key="r_" + str(i), use_container_width=True)
-
-            st.markdown("---")
-
-
-    # 兑换历史摘要
-    if redemption_log:
-        st.markdown("---")
-        st.markdown("#### 📜 兑换历史")
-        total_spent = sum(r.get("cost", 0) for r in redemption_log)
-        st.caption(
-            "累计兑换 "
-            + str(len(redemption_log))
-            + " 次，共花费 "
-            + str(total_spent)
-            + " pts"
+        st.markdown("### 🏆 奖励商店")
+        st.markdown(
+            "💰 **当前积分: "
+            + str(_total)
+            + "** — 同一个奖励可以反复兑换，每次都会扣积分"
         )
-        for entry in reversed(redemption_log[-20:]):
-            st.markdown(
-                "- 🕐 "
-                + entry.get("time", "")
-                + " | "
-                + entry.get("reward_name", "")
-                + " | -"
-                + str(entry.get("cost", 0))
+        st.markdown("---")
+
+        rewards = data.get("rewards", [])
+        redemption_log = data.get("redemption_log", [])
+
+        redeem_counts = {}
+        for r in redemption_log:
+            name = r.get("reward_name", "")
+            redeem_counts[name] = redeem_counts.get(name, 0) + 1
+
+        if not rewards:
+            st.warning("商店空空如也 → 去「设置」添加奖励")
+        else:
+            for i, reward in enumerate(rewards):
+                cost = max(reward.get("cost", 1), 1)
+                can_buy = _total >= cost
+                times = redeem_counts.get(reward.get("name", ""), 0)
+
+                col_info, col_btn = st.columns([3, 1])
+
+                with col_info:
+                    st.markdown("🎁 **" + reward.get("name", "未命名") + "**")
+
+                    if can_buy:
+                        cost_text = "✅ " + str(cost) + " pts"
+                    else:
+                        cost_text = "❌ " + str(cost) + " pts（差 " + str(cost - _total) + "）"
+
+                    if times > 0:
+                        times_text = "已兑 " + str(times) + " 次"
+                    else:
+                        times_text = "尚未兑换"
+
+                    st.caption(cost_text + " ｜ " + times_text)
+
+                with col_btn:
+                    if can_buy:
+                        if st.button("兑换", key="r_" + str(i), type="primary", use_container_width=True):
+                            data["redemption_log"].append(
+                                {
+                                    "id": new_entry_id(),
+                                    "time": now_str(),
+                                    "reward_name": reward.get("name", "未命名"),
+                                    "cost": cost,
+                                }
+                            )
+                            newly = check_achievements(data)
+                            save_data(data)
+                            st.session_state.data = data
+                            _flash = f"🎉🎉🎉 **兑换成功！** {reward.get('name', '未命名')} — 好好享受！"
+                            if newly:
+                                _ach_names = "、".join(a["name"] for a in newly)
+                                _flash += f"\n\n🏅 成就解锁：{_ach_names}"
+                            flash_success(_flash, icon="🎁", position="redeem", balloons=bool(newly))
+                            st.rerun()
+                    else:
+                        st.button("积分不够", disabled=True, key="r_" + str(i), use_container_width=True)
+
+                st.markdown("---")
+
+
+        # 兑换历史摘要
+        if redemption_log:
+            st.markdown("---")
+            st.markdown("#### 📜 兑换历史")
+            total_spent = sum(r.get("cost", 0) for r in redemption_log)
+            st.caption(
+                "累计兑换 "
+                + str(len(redemption_log))
+                + " 次，共花费 "
+                + str(total_spent)
                 + " pts"
             )
+            for entry in reversed(redemption_log[-20:]):
+                st.markdown(
+                    "- 🕐 "
+                    + entry.get("time", "")
+                    + " | "
+                    + entry.get("reward_name", "")
+                    + " | -"
+                    + str(entry.get("cost", 0))
+                    + " pts"
+                )
 
 
 # ════════ Tab 4：历史日志 ════════
-with tab4:
-    show_flash_message("history")
-    st.markdown("### 📋 历史日志")
+if page == "📋 历史日志":
+        show_flash_message("history")
+        st.markdown("### 📋 历史日志")
 
-    # ---- 撤销最近一条（跨行为/阻力，取时间最新的一条非成就记录） ----
-    _al = data.get("action_log", [])
-    _rl = data.get("resistance_log", [])
-    _last_act_idx = next((i for i in range(len(_al) - 1, -1, -1)
-                          if _al[i].get("source", SOURCE_TASK) != SOURCE_ACH), None)
-    _last_res_idx = len(_rl) - 1 if _rl else None
+        # ---- 撤销最近一条（跨行为/阻力，取时间最新的一条非成就记录） ----
+        _al = data.get("action_log", [])
+        _rl = data.get("resistance_log", [])
+        _last_act_idx = next((i for i in range(len(_al) - 1, -1, -1)
+                              if _al[i].get("source", SOURCE_TASK) != SOURCE_ACH), None)
+        _last_res_idx = len(_rl) - 1 if _rl else None
 
-    if _last_act_idx is not None or _last_res_idx is not None:
-        _ta = _al[_last_act_idx].get("time", "") if _last_act_idx is not None else ""
-        _tr = _rl[_last_res_idx].get("time", "") if _last_res_idx is not None else ""
-        _undo_from_action = _last_act_idx is not None and (not _tr or _ta >= _tr)
-        _undo_label = (_al[_last_act_idx].get("task", "未命名记录") if _undo_from_action
-                       else _rl[_last_res_idx].get("reason", "阻力复盘"))
+        if _last_act_idx is not None or _last_res_idx is not None:
+            _ta = _al[_last_act_idx].get("time", "") if _last_act_idx is not None else ""
+            _tr = _rl[_last_res_idx].get("time", "") if _last_res_idx is not None else ""
+            _undo_from_action = _last_act_idx is not None and (not _tr or _ta >= _tr)
+            _undo_label = (_al[_last_act_idx].get("task", "未命名记录") if _undo_from_action
+                           else _rl[_last_res_idx].get("reason", "阻力复盘"))
 
-        if not st.session_state.get("confirm_undo_latest"):
-            if st.button("↩️ 撤销最近一条记录"):
-                st.session_state["confirm_undo_latest"] = True
-                st.rerun()
-        else:
-            st.warning(f"将撤销：{_undo_label}（属性与积分一并回收）")
-            _uc1, _uc2 = st.columns(2)
-            with _uc1:
-                if st.button("⚠️ 确认撤销", key="confirm_undo_yes", type="primary"):
-                    if _undo_from_action:
-                        remove_action_entry(data, _last_act_idx)
-                    else:
-                        remove_resistance_entry(data, _last_res_idx)
-                    save_data(data)
-                    st.session_state.data = data
-                    st.session_state.pop("confirm_undo_latest", None)
-                    flash_success(f"↩️ 已撤销：{_undo_label}", position="history")
+            if not st.session_state.get("confirm_undo_latest"):
+                if st.button("↩️ 撤销最近一条记录"):
+                    st.session_state["confirm_undo_latest"] = True
                     st.rerun()
-            with _uc2:
-                if st.button("取消", key="confirm_undo_no"):
-                    st.session_state.pop("confirm_undo_latest", None)
-                    st.rerun()
-        st.markdown("---")
-
-    log1, log2, log3 = st.tabs(["📝 行为日志", "🚧 阻力记录", "📜 兑换记录"])
-
-    # --- 行为日志 ---
-    with log1:
-        action_logs = data.get("action_log", [])
-        if not action_logs:
-            st.info("还没有记录 → 去完成任务吧！")
-        else:
-            st.caption("共 " + str(len(action_logs)) + " 条记录")
-            if len(action_logs) > 10:
-                show_count_action = st.slider(
-                    "显示条数", 
-                    min_value=10, 
-                    max_value=min(len(action_logs), 200), 
-                    value=min(30, len(action_logs)),
-                    key="show_count_action"
-                )
             else:
-                show_count_action = len(action_logs)
+                st.warning(f"将撤销：{_undo_label}（属性与积分一并回收）")
+                _uc1, _uc2 = st.columns(2)
+                with _uc1:
+                    if st.button("⚠️ 确认撤销", key="confirm_undo_yes", type="primary"):
+                        if _undo_from_action:
+                            remove_action_entry(data, _last_act_idx)
+                        else:
+                            remove_resistance_entry(data, _last_res_idx)
+                        save_data(data)
+                        st.session_state.data = data
+                        st.session_state.pop("confirm_undo_latest", None)
+                        flash_success(f"↩️ 已撤销：{_undo_label}", position="history")
+                        st.rerun()
+                with _uc2:
+                    if st.button("取消", key="confirm_undo_no"):
+                        st.session_state.pop("confirm_undo_latest", None)
+                        st.rerun()
             st.markdown("---")
-            # 用索引遍历，方便修改日期时定位
-            _start = max(0, len(action_logs) - show_count_action)
-            for _idx in range(len(action_logs) - 1, _start - 1, -1):
-                entry = action_logs[_idx]
-                source = entry.get("source", SOURCE_TASK)
-                if source == SOURCE_ACH:
-                    attr_emoji = "🏅"
-                else:
-                    attr_emoji = {
-                        "Productivity": "⚡",
-                        "Creativity": "💡",
-                        "Willpower": "🔥",
-                        "Vitality": "💚",
-                    }.get(entry.get("attribute", ""), "•")
-                header = (
-                    attr_emoji
-                    + " +"
-                    + str(entry.get("points", "?"))
-                    + " — "
-                    + str(entry.get("task", "?"))
-                    + " ("
-                    + str(entry.get("time", ""))
-                    + ")"
-                )
-                with st.expander(header):
-                    st.markdown("**来源**: " + source)
-                    if entry.get("attribute"):
-                        st.markdown("**属性**: " + str(entry.get("attribute")))
-                    st.markdown("**得分**: +" + str(entry.get("points", "?")))
 
-                    # 修改日期（成就类不允许改）
-                    if source != SOURCE_ACH:
-                        _edit_key = f"edit_action_{_idx}"
+        log1, log2, log3 = st.tabs(["📝 行为日志", "🚧 阻力记录", "📜 兑换记录"])
+
+        # --- 行为日志 ---
+        with log1:
+            action_logs = data.get("action_log", [])
+            if not action_logs:
+                st.info("还没有记录 → 去完成任务吧！")
+            else:
+                st.caption("共 " + str(len(action_logs)) + " 条记录")
+                if len(action_logs) > 10:
+                    show_count_action = st.slider(
+                        "显示条数", 
+                        min_value=10, 
+                        max_value=min(len(action_logs), 200), 
+                        value=min(30, len(action_logs)),
+                        key="show_count_action"
+                    )
+                else:
+                    show_count_action = len(action_logs)
+                st.markdown("---")
+                # 用索引遍历，方便修改日期时定位
+                _start = max(0, len(action_logs) - show_count_action)
+                for _idx in range(len(action_logs) - 1, _start - 1, -1):
+                    entry = action_logs[_idx]
+                    source = entry.get("source", SOURCE_TASK)
+                    if source == SOURCE_ACH:
+                        attr_emoji = "🏅"
+                    else:
+                        attr_emoji = {
+                            "Productivity": "⚡",
+                            "Creativity": "💡",
+                            "Willpower": "🔥",
+                            "Vitality": "💚",
+                        }.get(entry.get("attribute", ""), "•")
+                    header = (
+                        attr_emoji
+                        + " +"
+                        + str(entry.get("points", "?"))
+                        + " — "
+                        + str(entry.get("task", "?"))
+                        + " ("
+                        + str(entry.get("time", ""))
+                        + ")"
+                    )
+                    with st.expander(header):
+                        st.markdown("**来源**: " + source)
+                        if entry.get("attribute"):
+                            st.markdown("**属性**: " + str(entry.get("attribute")))
+                        st.markdown("**得分**: +" + str(entry.get("points", "?")))
+
+                        # 修改日期（成就类不允许改）
+                        if source != SOURCE_ACH:
+                            _edit_key = f"edit_action_{_idx}"
+                            if st.button("✏️ 修改日期", key=f"btn_{_edit_key}"):
+                                st.session_state[_edit_key] = not st.session_state.get(_edit_key, False)
+
+                            if st.session_state.get(_edit_key):
+                                _time_str = entry.get("time", "")
+                                try:
+                                    _cur_date = datetime.strptime(_time_str[:10], "%Y-%m-%d").date()
+                                except (ValueError, TypeError):
+                                    _cur_date = now_local().date()
+                                _new_date = st.date_input("新日期", value=_cur_date, key=f"input_{_edit_key}")
+                                _ec1, _ec2 = st.columns(2)
+                                with _ec1:
+                                    if st.button("💾 保存", key=f"save_{_edit_key}", type="primary"):
+                                        _old_time = _time_str[11:] if len(_time_str) > 11 else "12:00"
+                                        entry["time"] = _new_date.strftime("%Y-%m-%d") + " " + _old_time
+                                        entry["backdated"] = (_new_date != now_local().date())
+                                        check_achievements(data)  # 日期变更可能恰好满足成就条件
+                                        save_data(data)
+                                        st.session_state.data = data
+                                        st.session_state.pop(_edit_key, None)
+                                        flash_success("✅ 日期已修改！", position="history")
+                                        st.rerun()
+                                with _ec2:
+                                    if st.button("取消", key=f"cancel_{_edit_key}"):
+                                        st.session_state.pop(_edit_key, None)
+                                        st.rerun()
+
+                        # 删除记录（成就来源不可删，会破坏成就积分一致性）
+                        if source != SOURCE_ACH:
+                            _del_key = f"del_action_{_idx}"
+                            if st.button("🗑️ 删除此条", key=f"btn_{_del_key}"):
+                                st.session_state[_del_key] = not st.session_state.get(_del_key, False)
+                            if st.session_state.get(_del_key):
+                                st.warning("删除后该条属性与积分会一并回收，确定吗？")
+                                _dc1, _dc2 = st.columns(2)
+                                with _dc1:
+                                    if st.button("⚠️ 确认删除", key=f"yes_{_del_key}", type="primary"):
+                                        remove_action_entry(data, _idx)
+                                        save_data(data)
+                                        st.session_state.data = data
+                                        st.session_state.pop(_del_key, None)
+                                        flash_success("🗑️ 已删除该记录并回收积分", position="history")
+                                        st.rerun()
+                                with _dc2:
+                                    if st.button("取消", key=f"no_{_del_key}"):
+                                        st.session_state.pop(_del_key, None)
+                                        st.rerun()
+                        else:
+                            st.caption("🏅 成就记录不可删除（会破坏成就积分一致性）")
+
+        # --- 阻力记录 ---
+        with log2:
+            resist_logs = data.get("resistance_log", [])
+            if not resist_logs:
+                st.info("还没有复盘记录")
+            else:
+                st.caption("共 " + str(len(resist_logs)) + " 次直面阻力 💪")
+                if len(resist_logs) > 10:
+                    show_count_resist = st.slider(
+                        "显示条数",
+                        min_value=10,
+                        max_value=min(len(resist_logs), 200),
+                        value=min(30, len(resist_logs)),
+                        key="show_count_resist"
+                    )
+                else:
+                    show_count_resist = len(resist_logs)
+                st.markdown("---")
+                _r_start = max(0, len(resist_logs) - show_count_resist)
+                for _ridx in range(len(resist_logs) - 1, _r_start - 1, -1):
+                    entry = resist_logs[_ridx]
+                    header = (
+                        str(entry.get("reason", "?"))
+                        + " — "
+                        + str(entry.get("time", ""))
+                    )
+                    with st.expander(header):
+                        st.markdown("**详情**: " + str(entry.get("detail", "?")))
+                        st.markdown(
+                            "💡 **改进策略**: " + str(entry.get("strategy", "?"))
+                        )
+
+                        # 修改日期
+                        _edit_key = f"edit_resist_{_ridx}"
                         if st.button("✏️ 修改日期", key=f"btn_{_edit_key}"):
                             st.session_state[_edit_key] = not st.session_state.get(_edit_key, False)
 
@@ -2300,7 +2449,7 @@ with tab4:
                                 if st.button("💾 保存", key=f"save_{_edit_key}", type="primary"):
                                     _old_time = _time_str[11:] if len(_time_str) > 11 else "12:00"
                                     entry["time"] = _new_date.strftime("%Y-%m-%d") + " " + _old_time
-                                    entry["backdated"] = (_new_date != now_local().date())
+                                    check_achievements(data)  # 日期变更可能恰好满足成就条件
                                     save_data(data)
                                     st.session_state.data = data
                                     st.session_state.pop(_edit_key, None)
@@ -2311,182 +2460,131 @@ with tab4:
                                     st.session_state.pop(_edit_key, None)
                                     st.rerun()
 
-                    # 删除记录（成就来源不可删，会破坏成就积分一致性）
-                    if source != SOURCE_ACH:
-                        _del_key = f"del_action_{_idx}"
+                        # 删除记录
+                        _del_key = f"del_resist_{_ridx}"
                         if st.button("🗑️ 删除此条", key=f"btn_{_del_key}"):
                             st.session_state[_del_key] = not st.session_state.get(_del_key, False)
                         if st.session_state.get(_del_key):
-                            st.warning("删除后该条属性与积分会一并回收，确定吗？")
+                            st.warning("删除后会回收 1 点意志力与积分，确定吗？")
                             _dc1, _dc2 = st.columns(2)
                             with _dc1:
                                 if st.button("⚠️ 确认删除", key=f"yes_{_del_key}", type="primary"):
-                                    remove_action_entry(data, _idx)
+                                    remove_resistance_entry(data, _ridx)
                                     save_data(data)
                                     st.session_state.data = data
                                     st.session_state.pop(_del_key, None)
-                                    flash_success("🗑️ 已删除该记录并回收积分", position="history")
+                                    flash_success("🗑️ 已删除该阻力记录", position="history")
                                     st.rerun()
                             with _dc2:
                                 if st.button("取消", key=f"no_{_del_key}"):
                                     st.session_state.pop(_del_key, None)
                                     st.rerun()
-                    else:
-                        st.caption("🏅 成就记录不可删除（会破坏成就积分一致性）")
 
-    # --- 阻力记录 ---
-    with log2:
-        resist_logs = data.get("resistance_log", [])
-        if not resist_logs:
-            st.info("还没有复盘记录")
-        else:
-            st.caption("共 " + str(len(resist_logs)) + " 次直面阻力 💪")
-            if len(resist_logs) > 10:
-                show_count_resist = st.slider(
-                    "显示条数",
-                    min_value=10,
-                    max_value=min(len(resist_logs), 200),
-                    value=min(30, len(resist_logs)),
-                    key="show_count_resist"
-                )
+        # --- 兑换记录 ---
+        with log3:
+            redemption_logs = data.get("redemption_log", [])
+            if not redemption_logs:
+                st.info("还没有兑换记录")
             else:
-                show_count_resist = len(resist_logs)
-            st.markdown("---")
-            _r_start = max(0, len(resist_logs) - show_count_resist)
-            for _ridx in range(len(resist_logs) - 1, _r_start - 1, -1):
-                entry = resist_logs[_ridx]
-                header = (
-                    str(entry.get("reason", "?"))
-                    + " — "
-                    + str(entry.get("time", ""))
-                )
-                with st.expander(header):
-                    st.markdown("**详情**: " + str(entry.get("detail", "?")))
-                    st.markdown(
-                        "💡 **改进策略**: " + str(entry.get("strategy", "?"))
-                    )
-
-                    # 修改日期
-                    _edit_key = f"edit_resist_{_ridx}"
-                    if st.button("✏️ 修改日期", key=f"btn_{_edit_key}"):
-                        st.session_state[_edit_key] = not st.session_state.get(_edit_key, False)
-
-                    if st.session_state.get(_edit_key):
-                        _time_str = entry.get("time", "")
-                        try:
-                            _cur_date = datetime.strptime(_time_str[:10], "%Y-%m-%d").date()
-                        except (ValueError, TypeError):
-                            _cur_date = now_local().date()
-                        _new_date = st.date_input("新日期", value=_cur_date, key=f"input_{_edit_key}")
-                        _ec1, _ec2 = st.columns(2)
-                        with _ec1:
-                            if st.button("💾 保存", key=f"save_{_edit_key}", type="primary"):
-                                _old_time = _time_str[11:] if len(_time_str) > 11 else "12:00"
-                                entry["time"] = _new_date.strftime("%Y-%m-%d") + " " + _old_time
-                                save_data(data)
-                                st.session_state.data = data
-                                st.session_state.pop(_edit_key, None)
-                                flash_success("✅ 日期已修改！", position="history")
-                                st.rerun()
-                        with _ec2:
-                            if st.button("取消", key=f"cancel_{_edit_key}"):
-                                st.session_state.pop(_edit_key, None)
-                                st.rerun()
-
-                    # 删除记录
-                    _del_key = f"del_resist_{_ridx}"
-                    if st.button("🗑️ 删除此条", key=f"btn_{_del_key}"):
-                        st.session_state[_del_key] = not st.session_state.get(_del_key, False)
-                    if st.session_state.get(_del_key):
-                        st.warning("删除后会回收 1 点意志力与积分，确定吗？")
-                        _dc1, _dc2 = st.columns(2)
-                        with _dc1:
-                            if st.button("⚠️ 确认删除", key=f"yes_{_del_key}", type="primary"):
-                                remove_resistance_entry(data, _ridx)
-                                save_data(data)
-                                st.session_state.data = data
-                                st.session_state.pop(_del_key, None)
-                                flash_success("🗑️ 已删除该阻力记录", position="history")
-                                st.rerun()
-                        with _dc2:
-                            if st.button("取消", key=f"no_{_del_key}"):
-                                st.session_state.pop(_del_key, None)
-                                st.rerun()
-
-    # --- 兑换记录 ---
-    with log3:
-        redemption_logs = data.get("redemption_log", [])
-        if not redemption_logs:
-            st.info("还没有兑换记录")
-        else:
-            total_spent = sum(r.get("cost", 0) for r in redemption_logs)
-            st.caption(
-                "共 "
-                + str(len(redemption_logs))
-                + " 次兑换，花费 "
-                + str(total_spent)
-                + " pts"
-            )
-            st.markdown("---")
-            for entry in reversed(redemption_logs[-30:]):
-                st.markdown(
-                    "- 🕐 "
-                    + str(entry.get("time", ""))
-                    + " | "
-                    + str(entry.get("reward_name", ""))
-                    + " | -"
-                    + str(entry.get("cost", 0))
+                total_spent = sum(r.get("cost", 0) for r in redemption_logs)
+                st.caption(
+                    "共 "
+                    + str(len(redemption_logs))
+                    + " 次兑换，花费 "
+                    + str(total_spent)
                     + " pts"
                 )
+                st.markdown("---")
+                for entry in reversed(redemption_logs[-30:]):
+                    st.markdown(
+                        "- 🕐 "
+                        + str(entry.get("time", ""))
+                        + " | "
+                        + str(entry.get("reward_name", ""))
+                        + " | -"
+                        + str(entry.get("cost", 0))
+                        + " pts"
+                    )
 
-            # 删除兑换记录（可用积分 = 累计 - 已花费，删除后自动退回）
-            del_rd_idx = st.selectbox(
-                "选择要删除的兑换记录",
-                range(len(redemption_logs)),
-                format_func=lambda i: f"{redemption_logs[i].get('time', '')} | {redemption_logs[i].get('reward_name', '')} | -{redemption_logs[i].get('cost', 0)} pts",
-                key="del_redemption",
-            )
-            if st.button("🗑️ 删除选中的兑换记录（积分退回）"):
-                _removed = data["redemption_log"].pop(del_rd_idx)
-                save_data(data)
-                st.session_state.data = data
-                flash_success(f"✅ 已删除兑换记录：{_removed.get('reward_name', '')}（积分已退回）", position="history")
-                st.rerun()
+                # 删除兑换记录（可用积分 = 累计 - 已花费，删除后自动退回）
+                del_rd_idx = st.selectbox(
+                    "选择要删除的兑换记录",
+                    range(len(redemption_logs)),
+                    format_func=lambda i: f"{redemption_logs[i].get('time', '')} | {redemption_logs[i].get('reward_name', '')} | -{redemption_logs[i].get('cost', 0)} pts",
+                    key="del_redemption",
+                )
+                if st.button("🗑️ 删除选中的兑换记录（积分退回）"):
+                    st.session_state["confirm_del_redemption"] = True
+                if st.session_state.get("confirm_del_redemption"):
+                    st.warning("删除后这笔兑换花费的积分会退回当前积分，确定吗？")
+                    _rdc1, _rdc2 = st.columns(2)
+                    with _rdc1:
+                        if st.button("⚠️ 确认删除", key="yes_del_redemption", type="primary"):
+                            _removed = data["redemption_log"].pop(del_rd_idx)
+                            save_data(data)
+                            st.session_state.data = data
+                            st.session_state.pop("confirm_del_redemption", None)
+                            st.session_state.pop("del_redemption", None)  # 重置下拉框，避免删除后索引越界
+                            flash_success(f"✅ 已删除兑换记录：{_removed.get('reward_name', '')}（积分已退回）", position="history")
+                            st.rerun()
+                    with _rdc2:
+                        if st.button("取消", key="no_del_redemption"):
+                            st.session_state.pop("confirm_del_redemption", None)
+                            st.rerun()
                 
                 
 # ════════ Tab 5：统计 ════════
-with tab5:
-    show_flash_message("stats")
-    st.markdown("### 📊 统计")
+if page == "📊 统计":
+        show_flash_message("stats")
+        st.markdown("### 📊 统计")
 
-    # ---- 周报 / 月报 ----
-    with st.expander("📋 周报 / 月报", expanded=False):
-        today_for_report = now_local().date()
-        monday = today_for_report - timedelta(days=today_for_report.weekday())
-        week_key = f"{monday.year}-W{monday.strftime('%W')}"
+        # ---- 周报 / 月报 ----
+        with st.expander("📋 周报 / 月报", expanded=False):
+            today_for_report = now_local().date()
+            monday = today_for_report - timedelta(days=today_for_report.weekday())
+            week_key = f"{monday.isocalendar()[0]}-W{monday.isocalendar()[1]}"
 
-        reports = data.get("reports", [])
+            reports = data.get("reports", [])
 
-        # session_state 幂等标记：防止同一次 rerun 中重复触发自动生成
-        auto_gen_key = f"report_auto_gen_{week_key}"
-        if auto_gen_key not in st.session_state:
-            st.session_state[auto_gen_key] = False
+            # session_state 幂等标记：防止同一次 rerun 中重复触发自动生成
+            auto_gen_key = f"report_auto_gen_{week_key}"
+            if auto_gen_key not in st.session_state:
+                st.session_state[auto_gen_key] = False
 
-        # 自动补生成：上周周报还没生成 + 上周有数据 → 补一份
-        last_week_monday = monday - timedelta(days=7)
-        last_week_key = f"{last_week_monday.year}-W{last_week_monday.strftime('%W')}"
-        has_last_weekly = any(r.get("type") == "weekly" and r.get("period_key") == last_week_key for r in reports)
-        if not has_last_weekly:
-            try:
-                last_week_data = _get_daily_map(data)
-                last_week_strs = [(last_week_monday + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
-                has_last_week_data = any(ds in last_week_data for ds in last_week_strs)
-                if has_last_week_data:
-                    last_week_sunday = monday - timedelta(days=1)
-                    report_text = generate_weekly_report(data, as_of_date=last_week_sunday)
+            # 自动补生成：上周周报还没生成 + 上周有数据 → 补一份
+            last_week_monday = monday - timedelta(days=7)
+            last_week_key = f"{last_week_monday.isocalendar()[0]}-W{last_week_monday.isocalendar()[1]}"
+            has_last_weekly = any(r.get("type") == "weekly" and r.get("period_key") == last_week_key for r in reports)
+            if not has_last_weekly:
+                try:
+                    last_week_data = _get_daily_map(data)
+                    last_week_strs = [(last_week_monday + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
+                    has_last_week_data = any(ds in last_week_data for ds in last_week_strs)
+                    if has_last_week_data:
+                        last_week_sunday = monday - timedelta(days=1)
+                        report_text = generate_weekly_report(data, as_of_date=last_week_sunday)
+                        reports.append({
+                            "type": "weekly",
+                            "period_key": last_week_key,
+                            "generated_time": now_str(),
+                            "content": report_text,
+                            "auto": True,
+                        })
+                        data["reports"] = reports
+                        save_data(data)
+                        st.session_state.data = data
+                except Exception as e:
+                    st.warning(f"上周周报自动补生成失败：{e}", icon="⚠️")
+
+            # 本周周报自动生成（周日当天）
+            is_sunday = today_for_report.weekday() == 6
+            existing_weekly = [r for r in reports if r.get("type") == "weekly" and r.get("period_key") == week_key]
+            if is_sunday and not existing_weekly and not st.session_state[auto_gen_key]:
+                try:
+                    report_text = generate_weekly_report(data)
                     reports.append({
                         "type": "weekly",
-                        "period_key": last_week_key,
+                        "period_key": week_key,
                         "generated_time": now_str(),
                         "content": report_text,
                         "auto": True,
@@ -2494,739 +2592,723 @@ with tab5:
                     data["reports"] = reports
                     save_data(data)
                     st.session_state.data = data
-            except Exception as e:
-                st.warning(f"上周周报自动补生成失败：{e}", icon="⚠️")
+                    st.session_state[auto_gen_key] = True
+                    existing_weekly = [reports[-1]]
+                except Exception as e:
+                    st.warning(f"本周周报自动生成失败：{e}", icon="⚠️")
 
-        # 本周周报自动生成（周日当天）
-        is_sunday = today_for_report.weekday() == 6
-        existing_weekly = [r for r in reports if r.get("type") == "weekly" and r.get("period_key") == week_key]
-        if is_sunday and not existing_weekly and not st.session_state[auto_gen_key]:
-            try:
-                report_text = generate_weekly_report(data)
-                reports.append({
-                    "type": "weekly",
-                    "period_key": week_key,
-                    "generated_time": now_str(),
-                    "content": report_text,
-                    "auto": True,
-                })
+            # 清理：reports 最多保留 30 份（控制存档体积，JSONBin 免费版上限 100KB）
+            if len(reports) > 30:
+                reports = sorted(reports, key=lambda r: r.get("generated_time", ""), reverse=True)[:30]
                 data["reports"] = reports
                 save_data(data)
                 st.session_state.data = data
-                st.session_state[auto_gen_key] = True
-                existing_weekly = [reports[-1]]
-            except Exception as e:
-                st.warning(f"本周周报自动生成失败：{e}", icon="⚠️")
 
-        # 清理：reports 最多保留 30 份（控制存档体积，JSONBin 免费版上限 100KB）
-        if len(reports) > 30:
-            reports = sorted(reports, key=lambda r: r.get("generated_time", ""), reverse=True)[:30]
-            data["reports"] = reports
-            save_data(data)
-            st.session_state.data = data
+            rc1, rc2 = st.columns(2)
+            with rc1:
+                if st.button("📋 生成本周周报", use_container_width=True):
+                    existing = [r for r in reports if r.get("type") == "weekly" and r.get("period_key") == week_key]
+                    if existing:
+                        old = existing[0]
+                        old["content"] = generate_weekly_report(data)
+                        old["generated_time"] = now_str()
+                        old["auto"] = False
+                        data["reports"] = reports
+                        save_data(data)
+                        st.session_state.data = data
+                        flash_success("✅ 本周周报已更新", position="stats")
+                        st.rerun()
+                    else:
+                        report_text = generate_weekly_report(data)
+                        reports.append({
+                            "type": "weekly",
+                            "period_key": week_key,
+                            "generated_time": now_str(),
+                            "content": report_text,
+                            "auto": False,
+                        })
+                        data["reports"] = reports
+                        save_data(data)
+                        st.session_state.data = data
+                        flash_success("✅ 周报已生成", position="stats")
+                        st.rerun()
+            with rc2:
+                if st.button("📅 生成本月月报", use_container_width=True):
+                    month_key = today_for_report.strftime("%Y-%m")
+                    existing_monthly = [r for r in reports if r.get("type") == "monthly" and r.get("period_key") == month_key]
+                    if existing_monthly:
+                        old = existing_monthly[0]
+                        old["content"] = generate_monthly_report(data)
+                        old["generated_time"] = now_str()
+                        old["auto"] = False
+                        data["reports"] = reports
+                        save_data(data)
+                        st.session_state.data = data
+                        flash_success("✅ 本月月报已更新", position="stats")
+                        st.rerun()
+                    else:
+                        report_text = generate_monthly_report(data)
+                        reports.append({
+                            "type": "monthly",
+                            "period_key": month_key,
+                            "generated_time": now_str(),
+                            "content": report_text,
+                            "auto": False,
+                        })
+                        data["reports"] = reports
+                        save_data(data)
+                        st.session_state.data = data
+                        flash_success("✅ 月报已生成", position="stats")
+                        st.rerun()
 
-        rc1, rc2 = st.columns(2)
-        with rc1:
-            if st.button("📋 生成本周周报", use_container_width=True):
-                existing = [r for r in reports if r.get("type") == "weekly" and r.get("period_key") == week_key]
-                if existing:
-                    old = existing[0]
-                    old["content"] = generate_weekly_report(data)
-                    old["generated_time"] = now_str()
-                    old["auto"] = False
-                    data["reports"] = reports
-                    save_data(data)
-                    st.session_state.data = data
-                    flash_success("✅ 本周周报已更新", position="stats")
-                    st.rerun()
-                else:
-                    report_text = generate_weekly_report(data)
-                    reports.append({
-                        "type": "weekly",
-                        "period_key": week_key,
-                        "generated_time": now_str(),
-                        "content": report_text,
-                        "auto": False,
-                    })
-                    data["reports"] = reports
-                    save_data(data)
-                    st.session_state.data = data
-                    flash_success("✅ 周报已生成", position="stats")
-                    st.rerun()
-        with rc2:
-            if st.button("📅 生成本月月报", use_container_width=True):
-                month_key = today_for_report.strftime("%Y-%m")
-                existing_monthly = [r for r in reports if r.get("type") == "monthly" and r.get("period_key") == month_key]
-                if existing_monthly:
-                    old = existing_monthly[0]
-                    old["content"] = generate_monthly_report(data)
-                    old["generated_time"] = now_str()
-                    old["auto"] = False
-                    data["reports"] = reports
-                    save_data(data)
-                    st.session_state.data = data
-                    flash_success("✅ 本月月报已更新", position="stats")
-                    st.rerun()
-                else:
-                    report_text = generate_monthly_report(data)
-                    reports.append({
-                        "type": "monthly",
-                        "period_key": month_key,
-                        "generated_time": now_str(),
-                        "content": report_text,
-                        "auto": False,
-                    })
-                    data["reports"] = reports
-                    save_data(data)
-                    st.session_state.data = data
-                    flash_success("✅ 月报已生成", position="stats")
-                    st.rerun()
+            # 显示最近报告
+            recent_reports = sorted(reports, key=lambda r: r.get("generated_time", ""), reverse=True)
+            if recent_reports:
+                latest = recent_reports[0]
+                st.markdown("---")
+                auto_tag = " 🤖自动生成" if latest.get("auto") else ""
+                st.caption(f"最近报告 · 生成于 {latest.get('generated_time', '')}{auto_tag}")
+                st.code(latest.get("content", ""), language=None)
 
-        # 显示最近报告
-        recent_reports = sorted(reports, key=lambda r: r.get("generated_time", ""), reverse=True)
-        if recent_reports:
-            latest = recent_reports[0]
-            st.markdown("---")
-            auto_tag = " 🤖自动生成" if latest.get("auto") else ""
-            st.caption(f"最近报告 · 生成于 {latest.get('generated_time', '')}{auto_tag}")
-            st.code(latest.get("content", ""), language=None)
-
-            if len(recent_reports) > 1:
-                with st.expander(f"查看全部历史报告（共 {len(recent_reports)} 份）"):
-                    for r in recent_reports[1:]:
-                        tag = " 🤖" if r.get("auto") else ""
-                        st.caption(f"{r.get('type', '')} · {r.get('generated_time', '')}{tag}")
-                        st.code(r.get("content", ""), language=None)
-                        st.markdown("")
-        else:
-            st.info("还没有报告。点击上方按钮生成一份。")
-    st.markdown("---")
-
-    # ---------- 汇总每日数据 ----------
-    daily = _get_daily_map(data)
-
-    today_date = now_local().date()
-
-    # ---- 数据摘要 ----
-    st.markdown("#### 📈 总览")
-
-    total_days = len(daily)
-    total_points = data.get("total_earned", 0)
-    avg_daily = round(total_points / max(total_days, 1), 1)
-
-    # 连续记录天数（今天没记录则从昨天开始算，不直接归零）
-    streak = calc_streak(set(daily.keys()), today_date)
-
-    s1, s2, s3 = st.columns(3)
-    with s1:
-        st.metric("📅 活跃天数", str(total_days))
-    with s2:
-        st.metric("📈 累计积分", str(total_points))
-    with s3:
-        st.metric("🔥 连续记录", str(streak) + " 天")
-
-    s4, s5 = st.columns(2)
-    with s4:
-        st.metric("📊 日均积分", str(avg_daily))
-    with s5:
-        total_records = len(data.get("action_log", [])) + len(data.get("resistance_log", []))
-        st.metric("📝 总记录数", str(total_records))
-
-    st.markdown("---")
-
-    # ---- 属性分布环形图 ----
-    st.markdown("#### 🍩 属性分布")
-
-    stats_total = data["stats"]
-    pie_labels = ["⚡ 生产力", "💡 创造力", "🔥 意志力", "💚 精力"]
-    pie_values = [
-        stats_total.get("Productivity", 0),
-        stats_total.get("Creativity", 0),
-        stats_total.get("Willpower",  0),
-        stats_total.get("Vitality",   0),
-    ]
-    pie_colors = ["#7a9eb0", "#c7958d", "#d48090", "#7fc5ca"]
-
-    if sum(pie_values) > 0:
-        fig_donut = go.Figure(data=[go.Pie(
-            labels=pie_labels,
-            values=pie_values,
-            hole=0.55,
-            marker=dict(colors=pie_colors),
-            textinfo="label+percent",
-            textposition="outside",
-        )])
-        fig_donut.update_layout(
-            showlegend=False,
-            margin=dict(t=20, b=20, l=20, r=20),
-            height=280,
-        )
-        st.plotly_chart(fig_donut, use_container_width=True)
-    else:
-        st.info("还没有数据，记录一些任务后就能看到分布图了！")
-
-    st.markdown("---")
-
-    # ---- 属性雷达图（本月 vs 上月） ----
-    st.markdown("#### 🕸️ 属性雷达（本月 vs 上月）")
-    st.caption("形状越饱满说明四维越均衡。虚线是上月的形状，对比可见变化。")
-
-    def _month_attr_sum(prefix):
-        vals = {"Productivity": 0, "Creativity": 0, "Willpower": 0, "Vitality": 0}
-        for ds, dd in daily.items():
-            if ds[:7] == prefix:
-                for k in vals:
-                    vals[k] += dd.get(k, 0)
-        return vals
-
-    _this_m = today_date.strftime("%Y-%m")
-    _last_m = (today_date.replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
-    _mv_this = _month_attr_sum(_this_m)
-    _mv_last = _month_attr_sum(_last_m)
-
-    if sum(_mv_this.values()) > 0 or sum(_mv_last.values()) > 0:
-        _attr_keys = ["Productivity", "Creativity", "Willpower", "Vitality"]
-        _radar_labels = ["⚡ 生产力", "💡 创造力", "🔥 意志力", "💚 精力"]
-        fig_radar = go.Figure()
-        if sum(_mv_last.values()) > 0:
-            fig_radar.add_trace(go.Scatterpolar(
-                r=[_mv_last[k] for k in _attr_keys],
-                theta=_radar_labels,
-                fill="toself",
-                name=f"上月（{_last_m}）",
-                line=dict(dash="dash"),
-                opacity=0.45,
-            ))
-        fig_radar.add_trace(go.Scatterpolar(
-            r=[_mv_this[k] for k in _attr_keys],
-            theta=_radar_labels,
-            fill="toself",
-            name=f"本月（{_this_m}）",
-        ))
-        fig_radar.update_layout(
-            polar=dict(radialaxis=dict(showticklabels=False)),
-            height=360,
-            margin=dict(t=50, b=20, l=50, r=50),
-            legend=dict(orientation="h", yanchor="bottom", y=1.05),
-        )
-        st.plotly_chart(fig_radar, use_container_width=True)
-    else:
-        st.info("本月和上月还没有属性数据。")
-
-    st.markdown("---")
-
-    # ---- 每日加分柱状图 ----
-    st.markdown("#### 📊 每日加分（近 14 天）")
-
-    bar_range_choice = st.selectbox(
-        "📅 查看范围",
-        [7, 14, 30, 60, 90],
-        index=1,
-        format_func=lambda x: f"近 {x} 天",
-        key="bar_range",
-    )
-    days_range = bar_range_choice
-    bar_dates = []
-    for i in range(days_range - 1, -1, -1):
-        d = today_date - timedelta(days=i)
-        bar_dates.append(d.strftime("%Y-%m-%d"))
-
-    prod_vals = [daily.get(d, {}).get("Productivity", 0) for d in bar_dates]
-    crea_vals = [daily.get(d, {}).get("Creativity", 0) for d in bar_dates]
-    will_vals = [daily.get(d, {}).get("Willpower", 0) for d in bar_dates]
-    vitl_vals = [daily.get(d, {}).get("Vitality", 0) for d in bar_dates]
-
-    bar_labels = [d[5:] for d in bar_dates]
-    bar_labels = [str(x) for x in bar_labels]  # 强制转为文本，防止 Plotly 自动解析日期
-
-    fig_bar = go.Figure()
-    fig_bar.add_trace(go.Bar(name="⚡ 生产力", x=bar_labels, y=prod_vals, marker_color="#7a9eb0"))
-    fig_bar.add_trace(go.Bar(name="💡 创造力", x=bar_labels, y=crea_vals, marker_color="#c7958d"))
-    fig_bar.add_trace(go.Bar(name="🔥 意志力", x=bar_labels, y=will_vals, marker_color="#d48090"))
-    fig_bar.add_trace(go.Bar(name="💚 精力", x=bar_labels, y=vitl_vals, marker_color="#7fc5ca"))
-    fig_bar.update_layout(
-        barmode="stack",
-        height=300,
-        margin=dict(t=10, b=30, l=30, r=10),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02),
-        xaxis_title=None,
-        yaxis_title="积分",
-        xaxis=dict(type="category"),  # 当作分类轴，不自动解析日期
-    )
-    st.plotly_chart(fig_bar, use_container_width=True)
-
-    st.markdown("---")
-
-    # ---- 活动热力图 ----
-    st.markdown("#### 🔥 活动热力图（近 12 周）")
-    st.caption("颜色越深 = 当天获得积分越多。空白 = 没有记录。")
-
-    heat_range_choice = st.selectbox(
-        "🗓️ 热力图范围",
-        [4, 8, 12, 24, 52, 104],
-        index=2,
-        format_func=lambda x: f"近 {x} 周",
-        key="heat_range",
-    )
-    weeks_back = heat_range_choice
-    start_monday = today_date - timedelta(days=today_date.weekday() + 7 * (weeks_back - 1))
-
-    week_starts = []
-    current = start_monday
-    while current <= today_date:
-        week_starts.append(current)
-        current += timedelta(days=7)
-
-    dow_labels = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
-    n_weeks = len(week_starts)
-
-    z_data = [[0] * n_weeks for _ in range(7)]
-    hover_text = [[""] * n_weeks for _ in range(7)]
-
-    for wi, monday in enumerate(week_starts):
-        for dow in range(7):
-            d = monday + timedelta(days=dow)
-            if d > today_date:
-                z_data[dow][wi] = -1  # 未来日期标记
-                hover_text[dow][wi] = ""
+                if len(recent_reports) > 1:
+                    with st.expander(f"查看全部历史报告（共 {len(recent_reports)} 份）"):
+                        for r in recent_reports[1:]:
+                            tag = " 🤖" if r.get("auto") else ""
+                            st.caption(f"{r.get('type', '')} · {r.get('generated_time', '')}{tag}")
+                            st.code(r.get("content", ""), language=None)
+                            st.markdown("")
             else:
-                ds = d.strftime("%Y-%m-%d")
-                pts = daily.get(ds, {}).get("total", 0)
-                z_data[dow][wi] = pts
-                weekday_cn = ["一", "二", "三", "四", "五", "六", "日"][dow]
-                hover_text[dow][wi] = f"{ds} 周{weekday_cn}<br>{int(pts)} 积分"
+                st.info("还没有报告。点击上方按钮生成一份。")
+        st.markdown("---")
 
-    x_labels = [w.strftime("%m/%d") for w in week_starts]
+        # ---------- 汇总每日数据 ----------
+        daily = _get_daily_map(data)
 
-    fig_heat = go.Figure(data=go.Heatmap(
-        z=z_data,
-        x=x_labels,
-        y=dow_labels,
-        text=hover_text,
-        hovertemplate="%{text}<extra></extra>",
-        colorscale=[
-            [0, "#e8e8e8"],
-            [0.01, "#d4edda"],
-            [0.2, "#7dcc7d"],
-            [0.5, "#3da63d"],
-            [1, "#1a6b1a"],
-        ],
-        showscale=False,
-        xgap=3,
-        ygap=3,
-        zmin=0,
-    ))
-    fig_heat.update_layout(
-        height=220,
-        margin=dict(t=10, b=30, l=50, r=20),
-    )
-    st.plotly_chart(fig_heat, use_container_width=True)
+        today_date = now_local().date()
 
-    st.markdown("---")
+        # ---- 数据摘要 ----
+        st.markdown("#### 📈 总览")
 
-    # ---- 心情 vs 积分 ----
-    st.markdown("#### 😊 心情与产出")
+        total_days = len(daily)
+        total_points = data.get("total_earned", 0)
+        avg_daily = round(total_points / max(total_days, 1), 1)
 
-    mood_data = {}
-    for entry in data.get("action_log", []):
-        source = entry.get("source", SOURCE_TASK)
-        if source in (SOURCE_ACH, SOURCE_CHECKIN):
-            continue
-        mood = entry.get("mood", "🙂")
-        if mood not in VALID_MOODS:
-            mood = "🙂"
-        pts = entry.get("points", 0)
-        if mood not in mood_data:
-            mood_data[mood] = {"total_pts": 0, "count": 0}
-        mood_data[mood]["total_pts"] += pts
-        mood_data[mood]["count"] += 1
+        # 连续记录天数（今天没记录则从昨天开始算，不直接归零）
+        streak = calc_streak(set(daily.keys()), today_date)
 
-    if mood_data and sum(v["count"] for v in mood_data.values()) > 0:
-        mood_display_order = list(reversed(MOOD_OPTIONS))
-        mood_labels = [m for m in mood_display_order if m in mood_data]
-        mood_labels += [m for m in mood_data if m not in mood_display_order]
+        s1, s2, s3 = st.columns(3)
+        with s1:
+            st.metric("📅 活跃天数", str(total_days))
+        with s2:
+            st.metric("📈 累计积分", str(total_points))
+        with s3:
+            st.metric("🔥 连续记录", str(streak) + " 天")
 
-        avg_pts = [round(mood_data[m]["total_pts"] / max(mood_data[m]["count"], 1), 1) for m in mood_labels]
-        counts = [mood_data[m]["count"] for m in mood_labels]
+        s4, s5 = st.columns(2)
+        with s4:
+            st.metric("📊 日均积分", str(avg_daily))
+        with s5:
+            total_records = len(data.get("action_log", [])) + len(data.get("resistance_log", []))
+            st.metric("📝 总记录数", str(total_records))
 
-        mc1, mc2 = st.columns(2)
-        with mc1:
-            st.caption("各心情平均得分")
-            fig_mood_bar = go.Figure(data=[go.Bar(
-                x=mood_labels,
-                y=avg_pts,
-                marker_color=["#7fc5ca", "#51cf66", "#ffe066", "#ffa94d", "#ff5c5c"][:len(mood_labels)],
-                text=[f"{v} pts" for v in avg_pts],
-                textposition="outside",
-            )])
-            fig_mood_bar.update_layout(
-                height=250,
-                margin=dict(t=10, b=30, l=30, r=10),
-                xaxis_title=None,
-                yaxis_title="平均得分",
-                showlegend=False,
-            )
-            st.plotly_chart(fig_mood_bar, use_container_width=True)
+        st.markdown("---")
 
-        with mc2:
-            st.caption("各心情记录次数")
-            fig_mood_pie = go.Figure(data=[go.Pie(
-                labels=mood_labels,
-                values=counts,
-                hole=0.5,
+        # ---- 属性分布环形图 ----
+        st.markdown("#### 🍩 属性分布")
+
+        stats_total = data["stats"]
+        pie_labels = ["⚡ 生产力", "💡 创造力", "🔥 意志力", "💚 精力"]
+        pie_values = [
+            stats_total.get("Productivity", 0),
+            stats_total.get("Creativity", 0),
+            stats_total.get("Willpower",  0),
+            stats_total.get("Vitality",   0),
+        ]
+        pie_colors = ["#7a9eb0", "#c7958d", "#d48090", "#7fc5ca"]
+
+        if sum(pie_values) > 0:
+            fig_donut = go.Figure(data=[go.Pie(
+                labels=pie_labels,
+                values=pie_values,
+                hole=0.55,
+                marker=dict(colors=pie_colors),
                 textinfo="label+percent",
                 textposition="outside",
             )])
-            fig_mood_pie.update_layout(
-                height=250,
-                margin=dict(t=10, b=10, l=10, r=10),
+            fig_donut.update_layout(
                 showlegend=False,
+                margin=dict(t=20, b=20, l=20, r=20),
+                height=280,
             )
-            st.plotly_chart(fig_mood_pie, use_container_width=True)
-
-        # 文字洞察
-        best_mood = max(mood_labels, key=lambda m: mood_data[m]["total_pts"] / max(mood_data[m]["count"], 1))
-        best_avg = round(mood_data[best_mood]["total_pts"] / max(mood_data[best_mood]["count"], 1), 1)
-        worst_mood = min(mood_labels, key=lambda m: mood_data[m]["total_pts"] / max(mood_data[m]["count"], 1))
-        worst_avg = round(mood_data[worst_mood]["total_pts"] / max(mood_data[worst_mood]["count"], 1), 1)
-
-        if len(mood_labels) == 1:
-            st.info(
-                f"💡 目前只有 {best_mood} 一种心情的记录（平均 {best_avg} pts/次）。"
-                f"多记录几种心情后，这里会显示不同状态下的产出对比。"
-            )
-        elif best_mood == worst_mood:
-            st.info(
-                f"💡 各心情下的平均产出相同（{best_avg} pts/次），"
-                f"说明心情对产出暂无显著影响。继续记录更多数据后再看趋势。"
-            )
+            st.plotly_chart(fig_donut, use_container_width=True)
         else:
-            st.info(
-                f"💡 你在 {best_mood} 状态下产出最高（平均 {best_avg} pts/次），"
-                f"在 {worst_mood} 状态下产出最低（平均 {worst_avg} pts/次）。"
+            st.info("还没有数据，记录一些任务后就能看到分布图了！")
+
+        st.markdown("---")
+
+        # ---- 属性雷达图（本月 vs 上月） ----
+        st.markdown("#### 🕸️ 属性雷达（本月 vs 上月）")
+        st.caption("形状越饱满说明四维越均衡。虚线是上月的形状，对比可见变化。")
+
+        def _month_attr_sum(prefix):
+            vals = {"Productivity": 0, "Creativity": 0, "Willpower": 0, "Vitality": 0}
+            for ds, dd in daily.items():
+                if ds[:7] == prefix:
+                    for k in vals:
+                        vals[k] += dd.get(k, 0)
+            return vals
+
+        _this_m = today_date.strftime("%Y-%m")
+        _last_m = (today_date.replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
+        _mv_this = _month_attr_sum(_this_m)
+        _mv_last = _month_attr_sum(_last_m)
+
+        if sum(_mv_this.values()) > 0 or sum(_mv_last.values()) > 0:
+            _attr_keys = ["Productivity", "Creativity", "Willpower", "Vitality"]
+            _radar_labels = ["⚡ 生产力", "💡 创造力", "🔥 意志力", "💚 精力"]
+            fig_radar = go.Figure()
+            if sum(_mv_last.values()) > 0:
+                fig_radar.add_trace(go.Scatterpolar(
+                    r=[_mv_last[k] for k in _attr_keys],
+                    theta=_radar_labels,
+                    fill="toself",
+                    name=f"上月（{_last_m}）",
+                    line=dict(dash="dash"),
+                    opacity=0.45,
+                ))
+            fig_radar.add_trace(go.Scatterpolar(
+                r=[_mv_this[k] for k in _attr_keys],
+                theta=_radar_labels,
+                fill="toself",
+                name=f"本月（{_this_m}）",
+            ))
+            fig_radar.update_layout(
+                polar=dict(radialaxis=dict(showticklabels=False)),
+                height=360,
+                margin=dict(t=50, b=20, l=50, r=50),
+                legend=dict(orientation="h", yanchor="bottom", y=1.05),
             )
-    else:
-        st.info("还没有心情数据。记录任务时选择心情后，这里会显示分析。")
+            st.plotly_chart(fig_radar, use_container_width=True)
+        else:
+            st.info("本月和上月还没有属性数据。")
 
-    # ---- 心情趋势线 ----
-    st.markdown("---")
-    st.markdown("#### 💗 心情趋势（近 30 天）")
-    st.caption("每天心情的平均值（😴1 → 🚀5），橙线是最近 7 个有记录日子的滑动平均。")
+        st.markdown("---")
 
-    _mood_score = {"😴": 1, "😐": 2, "🙂": 3, "😄": 4, "🚀": 5}
-    _day_mood = {}
-    for entry in data.get("action_log", []):
-        if entry.get("source", SOURCE_TASK) in (SOURCE_ACH, SOURCE_CHECKIN):
-            continue
-        m = entry.get("mood")
-        if m not in _mood_score:
-            continue
-        ds = entry.get("time", "")[:10]
-        _day_mood.setdefault(ds, []).append(_mood_score[m])
+        # ---- 每日加分柱状图 ----
+        st.markdown("#### 📊 每日加分（近 14 天）")
 
-    _t_dates = [(today_date - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(29, -1, -1)]
-    _t_vals = [round(sum(_day_mood[d]) / len(_day_mood[d]), 2) if _day_mood.get(d) else None for d in _t_dates]
-    _have_days = sum(1 for v in _t_vals if v is not None)
-
-    if _have_days >= 3:
-        # 滑动平均基于有记录的日子（不是日历日），贴回对应日期
-        _window = [v for v in _t_vals if v is not None]
-        _roll_vals = [
-            round(sum(_window[max(0, i - 6):i + 1]) / len(_window[max(0, i - 6):i + 1]), 2)
-            for i in range(len(_window))
-        ]
-        _roll_iter = iter(_roll_vals)
-        _t_roll = [next(_roll_iter) if v is not None else None for v in _t_vals]
-
-        fig_mood_trend = go.Figure()
-        fig_mood_trend.add_trace(go.Scatter(
-            x=[d[5:] for d in _t_dates], y=_t_vals, name="当日心情均值",
-            mode="lines+markers",
-            line=dict(color="#7fc5ca", width=1.5),
-            marker=dict(size=5),
-            connectgaps=False,
-        ))
-        fig_mood_trend.add_trace(go.Scatter(
-            x=[d[5:] for d in _t_dates], y=_t_roll, name="滑动平均",
-            mode="lines",
-            line=dict(color="#ffa94d", width=3),
-            connectgaps=False,
-        ))
-        fig_mood_trend.update_layout(
-            height=280,
-            margin=dict(t=10, b=30, l=40, r=10),
-            yaxis=dict(
-                range=[0.5, 5.5],
-                tickvals=[1, 2, 3, 4, 5],
-                ticktext=["😴", "😐", "🙂", "😄", "🚀"],
-            ),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02),
-            xaxis=dict(type="category"),
+        bar_range_choice = st.selectbox(
+            "📅 查看范围",
+            [7, 14, 30, 60, 90],
+            index=1,
+            format_func=lambda x: f"近 {x} 天",
+            key="bar_range",
         )
-        st.plotly_chart(fig_mood_trend, use_container_width=True)
-    else:
-        st.info(f"近 30 天只有 {_have_days} 天有心情记录，多记几天后就能看到趋势线。")
+        days_range = bar_range_choice
+        bar_dates = []
+        for i in range(days_range - 1, -1, -1):
+            d = today_date - timedelta(days=i)
+            bar_dates.append(d.strftime("%Y-%m-%d"))
+
+        prod_vals = [daily.get(d, {}).get("Productivity", 0) for d in bar_dates]
+        crea_vals = [daily.get(d, {}).get("Creativity", 0) for d in bar_dates]
+        will_vals = [daily.get(d, {}).get("Willpower", 0) for d in bar_dates]
+        vitl_vals = [daily.get(d, {}).get("Vitality", 0) for d in bar_dates]
+
+        bar_labels = [d[5:] for d in bar_dates]
+        bar_labels = [str(x) for x in bar_labels]  # 强制转为文本，防止 Plotly 自动解析日期
+
+        fig_bar = go.Figure()
+        fig_bar.add_trace(go.Bar(name="⚡ 生产力", x=bar_labels, y=prod_vals, marker_color="#7a9eb0"))
+        fig_bar.add_trace(go.Bar(name="💡 创造力", x=bar_labels, y=crea_vals, marker_color="#c7958d"))
+        fig_bar.add_trace(go.Bar(name="🔥 意志力", x=bar_labels, y=will_vals, marker_color="#d48090"))
+        fig_bar.add_trace(go.Bar(name="💚 精力", x=bar_labels, y=vitl_vals, marker_color="#7fc5ca"))
+        fig_bar.update_layout(
+            barmode="stack",
+            height=300,
+            margin=dict(t=10, b=30, l=30, r=10),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02),
+            xaxis_title=None,
+            yaxis_title="积分",
+            xaxis=dict(type="category"),  # 当作分类轴，不自动解析日期
+        )
+        st.plotly_chart(fig_bar, use_container_width=True)
+
+        st.markdown("---")
+
+        # ---- 活动热力图 ----
+        st.markdown("#### 🔥 活动热力图（近 12 周）")
+        st.caption("颜色越深 = 当天获得积分越多。空白 = 没有记录。")
+
+        heat_range_choice = st.selectbox(
+            "🗓️ 热力图范围",
+            [4, 8, 12, 24, 52, 104],
+            index=2,
+            format_func=lambda x: f"近 {x} 周",
+            key="heat_range",
+        )
+        weeks_back = heat_range_choice
+        start_monday = today_date - timedelta(days=today_date.weekday() + 7 * (weeks_back - 1))
+
+        week_starts = []
+        current = start_monday
+        while current <= today_date:
+            week_starts.append(current)
+            current += timedelta(days=7)
+
+        dow_labels = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+        n_weeks = len(week_starts)
+
+        z_data = [[0] * n_weeks for _ in range(7)]
+        hover_text = [[""] * n_weeks for _ in range(7)]
+
+        for wi, monday in enumerate(week_starts):
+            for dow in range(7):
+                d = monday + timedelta(days=dow)
+                if d > today_date:
+                    z_data[dow][wi] = -1  # 未来日期标记
+                    hover_text[dow][wi] = ""
+                else:
+                    ds = d.strftime("%Y-%m-%d")
+                    pts = daily.get(ds, {}).get("total", 0)
+                    z_data[dow][wi] = pts
+                    weekday_cn = ["一", "二", "三", "四", "五", "六", "日"][dow]
+                    hover_text[dow][wi] = f"{ds} 周{weekday_cn}<br>{int(pts)} 积分"
+
+        x_labels = [w.strftime("%m/%d") for w in week_starts]
+
+        fig_heat = go.Figure(data=go.Heatmap(
+            z=z_data,
+            x=x_labels,
+            y=dow_labels,
+            text=hover_text,
+            hovertemplate="%{text}<extra></extra>",
+            colorscale=[
+                [0, "#e8e8e8"],
+                [0.01, "#d4edda"],
+                [0.2, "#7dcc7d"],
+                [0.5, "#3da63d"],
+                [1, "#1a6b1a"],
+            ],
+            showscale=False,
+            xgap=3,
+            ygap=3,
+            zmin=0,
+        ))
+        fig_heat.update_layout(
+            height=220,
+            margin=dict(t=10, b=30, l=50, r=20),
+        )
+        st.plotly_chart(fig_heat, use_container_width=True)
+
+        st.markdown("---")
+
+        # ---- 心情 vs 积分 ----
+        st.markdown("#### 😊 心情与产出")
+
+        mood_data = {}
+        for entry in data.get("action_log", []):
+            source = entry.get("source", SOURCE_TASK)
+            if source in (SOURCE_ACH, SOURCE_CHECKIN):
+                continue
+            mood = entry.get("mood", "🙂")
+            if mood not in VALID_MOODS:
+                mood = "🙂"
+            pts = entry.get("points", 0)
+            if mood not in mood_data:
+                mood_data[mood] = {"total_pts": 0, "count": 0}
+            mood_data[mood]["total_pts"] += pts
+            mood_data[mood]["count"] += 1
+
+        if mood_data and sum(v["count"] for v in mood_data.values()) > 0:
+            mood_display_order = list(reversed(MOOD_OPTIONS))
+            mood_labels = [m for m in mood_display_order if m in mood_data]
+            mood_labels += [m for m in mood_data if m not in mood_display_order]
+
+            avg_pts = [round(mood_data[m]["total_pts"] / max(mood_data[m]["count"], 1), 1) for m in mood_labels]
+            counts = [mood_data[m]["count"] for m in mood_labels]
+
+            mc1, mc2 = st.columns(2)
+            with mc1:
+                st.caption("各心情平均得分")
+                fig_mood_bar = go.Figure(data=[go.Bar(
+                    x=mood_labels,
+                    y=avg_pts,
+                    marker_color=["#7fc5ca", "#51cf66", "#ffe066", "#ffa94d", "#ff5c5c"][:len(mood_labels)],
+                    text=[f"{v} pts" for v in avg_pts],
+                    textposition="outside",
+                )])
+                fig_mood_bar.update_layout(
+                    height=250,
+                    margin=dict(t=10, b=30, l=30, r=10),
+                    xaxis_title=None,
+                    yaxis_title="平均得分",
+                    showlegend=False,
+                )
+                st.plotly_chart(fig_mood_bar, use_container_width=True)
+
+            with mc2:
+                st.caption("各心情记录次数")
+                fig_mood_pie = go.Figure(data=[go.Pie(
+                    labels=mood_labels,
+                    values=counts,
+                    hole=0.5,
+                    textinfo="label+percent",
+                    textposition="outside",
+                )])
+                fig_mood_pie.update_layout(
+                    height=250,
+                    margin=dict(t=10, b=10, l=10, r=10),
+                    showlegend=False,
+                )
+                st.plotly_chart(fig_mood_pie, use_container_width=True)
+
+            # 文字洞察
+            best_mood = max(mood_labels, key=lambda m: mood_data[m]["total_pts"] / max(mood_data[m]["count"], 1))
+            best_avg = round(mood_data[best_mood]["total_pts"] / max(mood_data[best_mood]["count"], 1), 1)
+            worst_mood = min(mood_labels, key=lambda m: mood_data[m]["total_pts"] / max(mood_data[m]["count"], 1))
+            worst_avg = round(mood_data[worst_mood]["total_pts"] / max(mood_data[worst_mood]["count"], 1), 1)
+
+            if len(mood_labels) == 1:
+                st.info(
+                    f"💡 目前只有 {best_mood} 一种心情的记录（平均 {best_avg} pts/次）。"
+                    f"多记录几种心情后，这里会显示不同状态下的产出对比。"
+                )
+            elif best_mood == worst_mood:
+                st.info(
+                    f"💡 各心情下的平均产出相同（{best_avg} pts/次），"
+                    f"说明心情对产出暂无显著影响。继续记录更多数据后再看趋势。"
+                )
+            else:
+                st.info(
+                    f"💡 你在 {best_mood} 状态下产出最高（平均 {best_avg} pts/次），"
+                    f"在 {worst_mood} 状态下产出最低（平均 {worst_avg} pts/次）。"
+                )
+        else:
+            st.info("还没有心情数据。记录任务时选择心情后，这里会显示分析。")
+
+        # ---- 心情趋势线 ----
+        st.markdown("---")
+        st.markdown("#### 💗 心情趋势（近 30 天）")
+        st.caption("每天心情的平均值（😴1 → 🚀5），橙线是最近 7 个有记录日子的滑动平均。")
+
+        _mood_score = {"😴": 1, "😐": 2, "🙂": 3, "😄": 4, "🚀": 5}
+        _day_mood = {}
+        for entry in data.get("action_log", []):
+            if entry.get("source", SOURCE_TASK) in (SOURCE_ACH, SOURCE_CHECKIN):
+                continue
+            m = entry.get("mood")
+            if m not in _mood_score:
+                continue
+            ds = entry.get("time", "")[:10]
+            _day_mood.setdefault(ds, []).append(_mood_score[m])
+
+        _t_dates = [(today_date - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(29, -1, -1)]
+        _t_vals = [round(sum(_day_mood[d]) / len(_day_mood[d]), 2) if _day_mood.get(d) else None for d in _t_dates]
+        _have_days = sum(1 for v in _t_vals if v is not None)
+
+        if _have_days >= 3:
+            # 滑动平均基于有记录的日子（不是日历日），贴回对应日期
+            _window = [v for v in _t_vals if v is not None]
+            _roll_vals = [
+                round(sum(_window[max(0, i - 6):i + 1]) / len(_window[max(0, i - 6):i + 1]), 2)
+                for i in range(len(_window))
+            ]
+            _roll_iter = iter(_roll_vals)
+            _t_roll = [next(_roll_iter) if v is not None else None for v in _t_vals]
+
+            fig_mood_trend = go.Figure()
+            fig_mood_trend.add_trace(go.Scatter(
+                x=[d[5:] for d in _t_dates], y=_t_vals, name="当日心情均值",
+                mode="lines+markers",
+                line=dict(color="#7fc5ca", width=1.5),
+                marker=dict(size=5),
+                connectgaps=False,
+            ))
+            fig_mood_trend.add_trace(go.Scatter(
+                x=[d[5:] for d in _t_dates], y=_t_roll, name="滑动平均",
+                mode="lines",
+                line=dict(color="#ffa94d", width=3),
+                connectgaps=False,
+            ))
+            fig_mood_trend.update_layout(
+                height=280,
+                margin=dict(t=10, b=30, l=40, r=10),
+                yaxis=dict(
+                    range=[0.5, 5.5],
+                    tickvals=[1, 2, 3, 4, 5],
+                    ticktext=["😴", "😐", "🙂", "😄", "🚀"],
+                ),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                xaxis=dict(type="category"),
+            )
+            st.plotly_chart(fig_mood_trend, use_container_width=True)
+        else:
+            st.info(f"近 30 天只有 {_have_days} 天有心情记录，多记几天后就能看到趋势线。")
 
 
 # ════════ Tab 7：设置 ════════
-with tab7:
-    show_flash_message("settings")
-    st.markdown("### ⚙️ 设置")
+if page == "⚙️ 设置":
+        show_flash_message("settings")
+        st.markdown("### ⚙️ 设置")
 
-    # -- 快捷按钮设置 --
-    st.markdown("#### 🐾 快捷按钮设置")
-    st.caption("这些按钮会出现在「记录任务」里的「🐾 我动了一下」区域。适合常用动作、微启动、低能量记录。")
+        # -- 快捷按钮设置 --
+        st.markdown("#### 🐾 快捷按钮设置")
+        st.caption("这些按钮会出现在「记录任务」里的「🐾 我动了一下」区域。适合常用动作、微启动、低能量记录。")
 
-    attr_options = {
-        "⚡ 生产力 Productivity": "Productivity",
-        "💡 创造力 Creativity": "Creativity",
-        "🔥 意志力 Willpower": "Willpower",
-        "💚 精力 Vitality": "Vitality",
-    }
+        attr_options = {
+            "⚡ 生产力 Productivity": "Productivity",
+            "💡 创造力 Creativity": "Creativity",
+            "🔥 意志力 Willpower": "Willpower",
+            "💚 精力 Vitality": "Vitality",
+        }
 
-    qa1, qa2, qa3 = st.columns([2, 1.4, 1])
-    with qa1:
-        new_q_name = st.text_input(
-            "按钮名称",
-            placeholder="比如：🌙 睡前收尾",
-            key="new_q_name",
-        )
-    with qa2:
-        new_q_attr_label = st.selectbox(
-            "提升属性",
-            list(attr_options.keys()),
-            key="new_q_attr",
-        )
-    with qa3:
-        new_q_points = st.selectbox(
-            "加分",
-            [1, 5, 10],
-            index=1,
-            key="new_q_points",
-        )
-
-    if st.button("➕ 添加快捷按钮", use_container_width=True):
-        if new_q_name.strip():
-            data.setdefault("quick_actions", [])
-            data["quick_actions"].append(
-                {
-                    "name": new_q_name.strip(),
-                    "attribute": attr_options[new_q_attr_label],
-                    "points": int(new_q_points),
-                }
+        qa1, qa2, qa3 = st.columns([2, 1.4, 1])
+        with qa1:
+            new_q_name = st.text_input(
+                "按钮名称",
+                placeholder="比如：🌙 睡前收尾",
+                key="new_q_name",
             )
-            save_data(data)
-            st.session_state.data = data
-            flash_success("✅ 已添加快捷按钮: " + new_q_name.strip() + " (+" + str(new_q_points) + ")", position="settings")
-            st.rerun()
+        with qa2:
+            new_q_attr_label = st.selectbox(
+                "提升属性",
+                list(attr_options.keys()),
+                key="new_q_attr",
+            )
+        with qa3:
+            new_q_points = st.selectbox(
+                "加分",
+                [1, 5, 10],
+                index=1,
+                key="new_q_points",
+            )
+
+        if st.button("➕ 添加快捷按钮", use_container_width=True):
+            if new_q_name.strip():
+                data.setdefault("quick_actions", [])
+                data["quick_actions"].append(
+                    {
+                        "name": new_q_name.strip(),
+                        "attribute": attr_options[new_q_attr_label],
+                        "points": int(new_q_points),
+                    }
+                )
+                save_data(data)
+                st.session_state.data = data
+                flash_success("✅ 已添加快捷按钮: " + new_q_name.strip() + " (+" + str(new_q_points) + ")", position="settings")
+                st.rerun()
+            else:
+                st.error("请输入按钮名称")
+
+        st.markdown("##### 当前快捷按钮")
+
+        quick_actions = data.get("quick_actions", [])
+
+        if quick_actions:
+            del_q_idx = st.selectbox(
+                "选择要删除的快捷按钮",
+                range(len(quick_actions)),
+                format_func=lambda i: f"{quick_actions[i].get('name', '未命名')} | {quick_actions[i].get('attribute', 'Productivity')} +{quick_actions[i].get('points', 1)}",
+                key="del_quick_action",
+            )
+
+            if st.button("🗑️ 删除选中快捷按钮"):
+                removed = data["quick_actions"].pop(del_q_idx)
+                save_data(data)
+                st.session_state.data = data
+                st.session_state.pop("del_quick_action", None)  # 重置下拉框，避免删除后索引越界
+                flash_success("✅ 已删除快捷按钮: " + removed.get("name", "未命名动作"), position="settings")
+                st.rerun()
         else:
-            st.error("请输入按钮名称")
+            st.caption("暂无快捷按钮。添加几个常用动作吧。")
 
-    st.markdown("##### 当前快捷按钮")
-
-    quick_actions = data.get("quick_actions", [])
-
-    if quick_actions:
-        del_q_idx = st.selectbox(
-            "选择要删除的快捷按钮",
-            range(len(quick_actions)),
-            format_func=lambda i: f"{quick_actions[i].get('name', '未命名')} | {quick_actions[i].get('attribute', 'Productivity')} +{quick_actions[i].get('points', 1)}",
-            key="del_quick_action",
-        )
-
-        if st.button("🗑️ 删除选中快捷按钮"):
-            removed = data["quick_actions"].pop(del_q_idx)
-            save_data(data)
-            st.session_state.data = data
-            flash_success("✅ 已删除快捷按钮: " + removed.get("name", "未命名动作"), position="settings")
-            st.rerun()
-    else:
-        st.caption("暂无快捷按钮。添加几个常用动作吧。")
-
-    st.markdown("---")
+        st.markdown("---")
     
 
-    # -- 添加奖励 --
-    st.markdown("#### ➕ 添加自定义奖励")
-    c5, c6 = st.columns([2, 1])
-    with c5:
-        new_name = st.text_input(
-            "奖励名称", placeholder="比如：买一双新鞋", key="new_r_name"
-        )
-    with c6:
-        new_cost = st.number_input(
-            "所需积分", min_value=1, value=100, step=10, key="new_r_cost"
-        )
-    if st.button("➕ 添加奖励", use_container_width=True):
-        if new_name.strip():
-            data["rewards"].append({"name": new_name.strip(), "cost": int(new_cost)})
-            save_data(data)
-            st.session_state.data = data
-            flash_success("✅ 已添加: " + new_name + " (" + str(new_cost) + " pts)", position="settings")
-            st.rerun()
+        # -- 添加奖励 --
+        st.markdown("#### ➕ 添加自定义奖励")
+        c5, c6 = st.columns([2, 1])
+        with c5:
+            new_name = st.text_input(
+                "奖励名称", placeholder="比如：买一双新鞋", key="new_r_name"
+            )
+        with c6:
+            new_cost = st.number_input(
+                "所需积分", min_value=1, value=100, step=10, key="new_r_cost"
+            )
+        if st.button("➕ 添加奖励", use_container_width=True):
+            if new_name.strip():
+                data["rewards"].append({"name": new_name.strip(), "cost": int(new_cost)})
+                save_data(data)
+                st.session_state.data = data
+                flash_success("✅ 已添加: " + new_name + " (" + str(new_cost) + " pts)", position="settings")
+                st.rerun()
+            else:
+                st.error("请输入奖励名称")
+
+        # -- 删除奖励 --
+        st.markdown("---")
+        st.markdown("#### 🗑️ 删除奖励")
+        if data["rewards"]:
+            del_r_idx = st.selectbox(
+                "选择要删除的奖励",
+                range(len(data["rewards"])),
+                format_func=lambda i: f"{data['rewards'][i]['name']} ({data['rewards'][i]['cost']} pts)",
+                key="del_reward",
+            )
+            if st.button("🗑️ 删除选中奖励"):
+                data["rewards"].pop(del_r_idx)
+                save_data(data)
+                st.session_state.data = data
+                st.session_state.pop("del_reward", None)  # 重置下拉框，避免删除后索引越界
+                flash_success("✅ 已删除", position="settings")
+                st.rerun()
         else:
-            st.error("请输入奖励名称")
+            st.caption("暂无奖励可删除")
 
-    # -- 删除奖励 --
-    st.markdown("---")
-    st.markdown("#### 🗑️ 删除奖励")
-    if data["rewards"]:
-        del_r_idx = st.selectbox(
-            "选择要删除的奖励",
-            range(len(data["rewards"])),
-            format_func=lambda i: f"{data['rewards'][i]['name']} ({data['rewards'][i]['cost']} pts)",
-            key="del_reward",
+        # -- 危险区域 --
+        st.markdown("---")
+        st.markdown("#### ⚠️ 危险区域")
+        col_r1, col_r2, col_r3 = st.columns(3)
+
+        with col_r1:
+            confirm_reset = st.checkbox("确认重置", key="confirm_reset_stats")
+            if st.button("🔄 重置属性为0", type="secondary", disabled=not confirm_reset):
+                for key in data["stats"]:
+                    data["stats"][key] = 0
+                data["total_earned"] = 0
+                save_data(data)
+                st.session_state.data = data
+                st.session_state["confirm_reset_stats"] = False
+                flash_success("✅ 属性已清零", position="settings")
+                st.rerun()
+        st.caption("提示：若之后与另一台设备的存档发生合并，属性会按历史日志重新计算回来（合并机制的设计行为）")
+
+        with col_r2:
+            confirm_clear = st.checkbox("确认清除", key="confirm_clear_data")
+            if st.button("💣 清除所有数据", type="secondary", disabled=not confirm_clear):
+                data = new_data()
+                save_data(data)
+                st.session_state.data = data
+                st.session_state["confirm_clear_data"] = False
+                flash_success("✅ 已恢复初始状态", position="settings")
+                st.rerun()
+
+        with col_r3:
+            if st.button("🩹 修复属性(找回错扣分)", type="primary"):
+                data = rebuild_stats_from_logs(data)
+                newly = check_achievements(data)
+                save_data(data)
+                st.session_state.data = data
+                s = data["stats"]
+                _flash = f"✅ 已从历史重建属性！\n\n⚡{s['Productivity']} 💡{s['Creativity']} 🔥{s['Willpower']} 💚{s['Vitality']}"
+                if newly:
+                    _ach_names = "、".join(a["name"] for a in newly)
+                    _flash += f"\n\n🏅 成就解锁：{_ach_names}"
+                flash_success(_flash, icon="🩹", position="settings", balloons=bool(newly))
+                st.rerun()
+
+
+        # -- 备份 --
+        st.markdown("---")
+        st.markdown("#### 📤 备份数据")
+        try:
+            _size_kb = len(json.dumps(data, ensure_ascii=False).encode("utf-8")) / 1024
+        except Exception:
+            _size_kb = 0
+        st.caption(f"当前存档体积：{_size_kb:.1f} KB（JSONBin 免费版单 bin 上限 100 KB，建议定期导出备份）")
+        st.download_button(
+            label="下载 JSON 备份",
+            data=json.dumps(data, ensure_ascii=False, indent=2),
+            file_name="life_rpg_backup_" + now_str().split(" ")[0].replace("-", "") + ".json",
+            mime="application/json",
+            use_container_width=True,
         )
-        if st.button("🗑️ 删除选中奖励"):
-            data["rewards"].pop(del_r_idx)
-            save_data(data)
-            st.session_state.data = data
-            flash_success("✅ 已删除", position="settings")
-            st.rerun()
-    else:
-        st.caption("暂无奖励可删除")
-
-    # -- 危险区域 --
-    st.markdown("---")
-    st.markdown("#### ⚠️ 危险区域")
-    col_r1, col_r2, col_r3 = st.columns(3)
-
-    with col_r1:
-        confirm_reset = st.checkbox("确认重置", key="confirm_reset_stats")
-        if st.button("🔄 重置属性为0", type="secondary", disabled=not confirm_reset):
-            for key in data["stats"]:
-                data["stats"][key] = 0
-            data["total_earned"] = 0
-            save_data(data)
-            st.session_state.data = data
-            st.session_state["confirm_reset_stats"] = False
-            flash_success("✅ 属性已清零", position="settings")
-            st.rerun()
-
-    with col_r2:
-        confirm_clear = st.checkbox("确认清除", key="confirm_clear_data")
-        if st.button("💣 清除所有数据", type="secondary", disabled=not confirm_clear):
-            data = new_data()
-            save_data(data)
-            st.session_state.data = data
-            st.session_state["confirm_clear_data"] = False
-            flash_success("✅ 已恢复初始状态", position="settings")
-            st.rerun()
-
-    with col_r3:
-        if st.button("🩹 修复属性(找回错扣分)", type="primary"):
-            data = rebuild_stats_from_logs(data)
-            newly = check_achievements(data)
-            save_data(data)
-            st.session_state.data = data
-            s = data["stats"]
-            _flash = f"✅ 已从历史重建属性！\n\n⚡{s['Productivity']} 💡{s['Creativity']} 🔥{s['Willpower']} 💚{s['Vitality']}"
-            if newly:
-                _ach_names = "、".join(a["name"] for a in newly)
-                _flash += f"\n\n🏅 成就解锁：{_ach_names}"
-            flash_success(_flash, icon="🩹", position="settings", balloons=bool(newly))
-            st.rerun()
-
-
-    # -- 备份 --
-    st.markdown("---")
-    st.markdown("#### 📤 备份数据")
-    try:
-        _size_kb = len(json.dumps(data, ensure_ascii=False).encode("utf-8")) / 1024
-    except Exception:
-        _size_kb = 0
-    st.caption(f"当前存档体积：{_size_kb:.1f} KB（JSONBin 免费版单 bin 上限 100 KB，建议定期导出备份）")
-    st.download_button(
-        label="下载 JSON 备份",
-        data=json.dumps(data, ensure_ascii=False, indent=2),
-        file_name="life_rpg_backup_" + now_str().split(" ")[0].replace("-", "") + ".json",
-        mime="application/json",
-        use_container_width=True,
-    )
 
 
 # ════════ Tab 6：成就 ════════
-with tab6:
-    st.markdown("### 🏅 成就")
+if page == "🏅 成就":
+        st.markdown("### 🏅 成就")
 
-    achievements = data.get("achievements", [])
-    unlocked = [a for a in achievements if a.get("unlocked")]
-    total_bonus = sum(a.get("bonus", 0) for a in unlocked)
+        achievements = data.get("achievements", [])
+        unlocked = [a for a in achievements if a.get("unlocked")]
+        total_bonus = sum(a.get("bonus", 0) for a in unlocked)
 
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.metric("🏅 已解锁", f"{len(unlocked)} / {len(achievements)}")
-    with c2:
-        st.metric("💰 成就积分", str(total_bonus))
-    with c3:
-        st.metric("📊 完成度", f"{int(len(unlocked) / max(len(achievements), 1) * 100)}%")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.metric("🏅 已解锁", f"{len(unlocked)} / {len(achievements)}")
+        with c2:
+            st.metric("💰 成就积分", str(total_bonus))
+        with c3:
+            st.metric("📊 完成度", f"{int(len(unlocked) / max(len(achievements), 1) * 100)}%")
 
-    st.progress(len(unlocked) / max(len(achievements), 1))
-    st.markdown("---")
+        st.progress(len(unlocked) / max(len(achievements), 1))
+        st.markdown("---")
 
-    cat_labels = {
-        "cumulative": "📈 累积型成就",
-        "daily": "📅 单日型成就",
-        "special": "🎯 特殊行为型成就",
-        "mood": "🎭 心情系列成就",
-        "milestone": "🎯 里程碑成就",
-        "checkin": "📋 签到系列成就",
-    }
-    cat_colors = {
-        "cumulative": "#58CC02",
-        "daily": "#1CB0F6",
-        "special": "#CE82FF",
-        "mood": "#FF6B9D",
-        "milestone": "#FFA500",
-        "checkin": "#20B2AA",
-    }
+        cat_labels = {
+            "cumulative": "📈 累积型成就",
+            "daily": "📅 单日型成就",
+            "special": "🎯 特殊行为型成就",
+            "mood": "🎭 心情系列成就",
+            "milestone": "🎯 里程碑成就",
+            "checkin": "📋 签到系列成就",
+        }
+        cat_colors = {
+            "cumulative": "#58CC02",
+            "daily": "#1CB0F6",
+            "special": "#CE82FF",
+            "mood": "#FF6B9D",
+            "milestone": "#FFA500",
+            "checkin": "#20B2AA",
+        }
 
-    for cat in ["cumulative", "daily", "special", "mood", "milestone", "checkin"]:
-        cat_achs = [a for a in achievements if a.get("category") == cat]
-        if not cat_achs:
-            continue
-        # 同类成就按 bonus 升序排列（简单的在前）
-        cat_achs = sorted(cat_achs, key=lambda a: a.get("bonus", 0))
-        st.markdown(f"#### {cat_labels.get(cat, cat)}")
+        for cat in ["cumulative", "daily", "special", "mood", "milestone", "checkin"]:
+            cat_achs = [a for a in achievements if a.get("category") == cat]
+            if not cat_achs:
+                continue
+            # 同类成就按 bonus 升序排列（简单的在前）
+            cat_achs = sorted(cat_achs, key=lambda a: a.get("bonus", 0))
+            st.markdown(f"#### {cat_labels.get(cat, cat)}")
 
-        badges_html = '<div style="display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px;">'
-        for ach in cat_achs:
-            parts = ach["name"].split(" ", 1)
-            emoji = parts[0] if len(parts) > 1 else "🏅"
-            name = parts[1] if len(parts) > 1 else ach["name"]
-            color = cat_colors.get(cat, "#888")
+            badges_html = '<div style="display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px;">'
+            for ach in cat_achs:
+                parts = ach["name"].split(" ", 1)
+                emoji = parts[0] if len(parts) > 1 else "🏅"
+                name = parts[1] if len(parts) > 1 else ach["name"]
+                color = cat_colors.get(cat, "#888")
 
-            if ach.get("unlocked"):
-                badges_html += (
-                    f'<div title="{ach["desc"]}" '
-                    f'style="flex: 1 1 120px; min-width: 110px; '
-                    f'background: linear-gradient(135deg, {color}22, {color}08); '
-                    f'border: 1.5px solid {color}55; border-radius: 10px; '
-                    f'padding: 10px 6px; text-align: center; transition: transform 0.15s;">'
-                    f'<div style="font-size: 1.8rem; margin-bottom: 2px;">{emoji}</div>'
-                    f'<div style="font-weight: 700; font-size: 0.82rem; line-height: 1.3;">{name}</div>'
-                    f'<div style="font-size: 0.72rem; color: {color}; font-weight: 600;">+{ach["bonus"]} pts</div>'
-                    f'</div>'
-                )
-            else:
-                badges_html += (
-                    f'<div title="{ach["desc"]}" '
-                    f'style="flex: 1 1 120px; min-width: 110px; '
-                    f'background: rgba(128,128,128,0.06); '
-                    f'border: 1.5px solid rgba(128,128,128,0.15); border-radius: 10px; '
-                    f'padding: 10px 6px; text-align: center; opacity: 0.45; filter: grayscale(0.7);">'
-                    f'<div style="font-size: 1.8rem; margin-bottom: 2px;">🔒</div>'
-                    f'<div style="font-weight: 700; font-size: 0.82rem; line-height: 1.3; color: #888;">{name}</div>'
-                    f'<div style="font-size: 0.72rem; color: #aaa;">+{ach["bonus"]} pts</div>'
-                    f'</div>'
-                )
-        badges_html += '</div>'
-        st.markdown(badges_html, unsafe_allow_html=True)
+                if ach.get("unlocked"):
+                    badges_html += (
+                        f'<div title="{ach["desc"]}" '
+                        f'style="flex: 1 1 120px; min-width: 110px; '
+                        f'background: linear-gradient(135deg, {color}22, {color}08); '
+                        f'border: 1.5px solid {color}55; border-radius: 10px; '
+                        f'padding: 10px 6px; text-align: center; transition: transform 0.15s;">'
+                        f'<div style="font-size: 1.8rem; margin-bottom: 2px;">{emoji}</div>'
+                        f'<div style="font-weight: 700; font-size: 0.82rem; line-height: 1.3;">{name}</div>'
+                        f'<div style="font-size: 0.72rem; color: {color}; font-weight: 600;">+{ach["bonus"]} pts</div>'
+                        f'</div>'
+                    )
+                else:
+                    badges_html += (
+                        f'<div title="{ach["desc"]}" '
+                        f'style="flex: 1 1 120px; min-width: 110px; '
+                        f'background: rgba(128,128,128,0.06); '
+                        f'border: 1.5px solid rgba(128,128,128,0.15); border-radius: 10px; '
+                        f'padding: 10px 6px; text-align: center; opacity: 0.45; filter: grayscale(0.7);">'
+                        f'<div style="font-size: 1.8rem; margin-bottom: 2px;">🔒</div>'
+                        f'<div style="font-weight: 700; font-size: 0.82rem; line-height: 1.3; color: #888;">{name}</div>'
+                        f'<div style="font-size: 0.72rem; color: #aaa;">+{ach["bonus"]} pts</div>'
+                        f'</div>'
+                    )
+            badges_html += '</div>'
+            st.markdown(badges_html, unsafe_allow_html=True)
 
-        st.markdown("")
+            st.markdown("")
 
 
-# ════════════════════════════════════════════════════════
+    # ════════════════════════════════════════════════════════
 #  ⚔️ 属性面板（回填到页面顶部占位，读取最新 data → 即时刷新）
 # ════════════════════════════════════════════════════════
 with stats_placeholder:
