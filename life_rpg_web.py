@@ -293,96 +293,87 @@ def remove_resistance_entry(data, idx):
 
 # ---------- 成就系统 ----------
 ACHIEVEMENT_DEFS = [
-    # 累积型
-    {"id": "hundred_pts",      "name": "💯 百分起步",  "desc": "总积分突破 100",       "category": "cumulative", "bonus": 20},
-    {"id": "five_hundred_pts", "name": "🏆 五百达成",  "desc": "总积分突破 500",       "category": "cumulative", "bonus": 30},
-    {"id": "thousand_pts",     "name": "🌟 千分玩家",  "desc": "总积分突破 1000",      "category": "cumulative", "bonus": 50},
-    {"id": "five_thousand_pts","name": "💎 万分之路",  "desc": "总积分突破 5000",      "category": "cumulative", "bonus": 60},
-    {"id": "week_active",      "name": "🗓️ 一周坚持",  "desc": "活跃天数满 7 天",      "category": "cumulative", "bonus": 20},
-    {"id": "month_active",     "name": "📅 月度达人",  "desc": "活跃天数满 30 天",     "category": "cumulative", "bonus": 40},
-    {"id": "hundred_active",   "name": "💯 百日筑基",  "desc": "活跃天数满 100 天",    "category": "cumulative", "bonus": 60},
-    {"id": "resistance_10",    "name": "🧠 直面者",    "desc": "阻力复盘满 10 次",     "category": "cumulative", "bonus": 20},
-    {"id": "resistance_30",    "name": "💪 阻力克星",  "desc": "阻力复盘满 30 次",     "category": "cumulative", "bonus": 40},
-    {"id": "redeem_5",         "name": "🎁 懂得犒赏",  "desc": "奖励兑换满 5 次",      "category": "cumulative", "bonus": 15},
-    {"id": "redeem_10",        "name": "🏆 生活达人",  "desc": "奖励兑换满 10 次",     "category": "cumulative", "bonus": 30},
-    # 单日型
-    {"id": "daily_30",         "name": "⚡ 小有产出",  "desc": "单日得分突破 30",      "category": "daily",      "bonus": 20},
-    {"id": "daily_50",         "name": "🔥 产出爆发",  "desc": "单日得分突破 50",      "category": "daily",      "bonus": 40},
-    {"id": "daily_100",        "name": "💥 超级加倍",  "desc": "单日得分突破 100",     "category": "daily",      "bonus": 50},
-    {"id": "daily_balanced",   "name": "⚖️ 均衡发展",  "desc": "单日四维属性全部有得分","category": "daily",      "bonus": 30},
-    {"id": "daily_5_records",  "name": "📝 忙碌一天",  "desc": "单日记录 5 条以上",    "category": "daily",      "bonus": 25},
-    # 特殊行为型
-    {"id": "first_task",       "name": "🎮 启程",      "desc": "第一次记录任务",       "category": "special",    "bonus": 20},
-    {"id": "first_resistance", "name": "🧠 勇敢直面",  "desc": "第一次阻力复盘",       "category": "special",    "bonus": 20},
-    {"id": "first_redeem",     "name": "🎁 首次犒赏",  "desc": "第一次兑换奖励",       "category": "special",    "bonus": 20},
-    {"id": "first_backdate",   "name": "📅 时光回溯",  "desc": "第一次补记过去日期的任务","category": "special",  "bonus": 20},
-    {"id": "streak_7",         "name": "🔥 一周不断",  "desc": "连续记录 7 天",        "category": "special",    "bonus": 40},
-    {"id": "streak_30",        "name": "💎 月度连击",  "desc": "连续记录 30 天",       "category": "special",    "bonus": 60},
-    {"id": "stat_100",         "name": "⭐ 百分属性",  "desc": "任一属性突破 100",     "category": "special",    "bonus": 25},
-    {"id": "stat_500",         "name": "🌟 属性大师",  "desc": "任一属性突破 500",     "category": "special",    "bonus": 50},
-    # —— 心情系列 ——
-    {"id": "mood_10",           "name": "📝 心情记录员",  "desc": "记录 10 次心情",       "category": "mood",      "bonus": 15},
-    {"id": "mood_50",           "name": "🎭 心情达人",    "desc": "记录 50 次心情",       "category": "mood",      "bonus": 30},
-    {"id": "mood_streak_7",     "name": "📅 心情连续",    "desc": "连续 7 天记录心情",     "category": "mood",      "bonus": 20},
-    # —— 全属性里程碑 ——
-    {"id": "all_attr_lv10",     "name": "🎯 全属性Lv10",  "desc": "四项属性均达 Lv10",     "category": "milestone", "bonus": 50},
-    {"id": "all_attr_lv15",     "name": "🎯 全属性Lv15",  "desc": "四项属性均达 Lv15",     "category": "milestone", "bonus": 80},
-    {"id": "all_attr_lv20",     "name": "🎯 全属性Lv20",  "desc": "四项属性均达 Lv20",     "category": "milestone", "bonus": 120},
-    {"id": "all_attr_lv30",     "name": "🎯 全属性Lv30",  "desc": "四项属性均达 Lv30",     "category": "milestone", "bonus": 200},
-    {"id": "all_attr_lv40",     "name": "🎯 全属性Lv40",  "desc": "四项属性均达 Lv40",     "category": "milestone", "bonus": 400},
-    # —— 活跃里程碑 ——
-    {"id": "active_50",         "name": "📆 活跃50天",    "desc": "累计活跃 50 天",       "category": "cumulative","bonus": 30},
-    {"id": "active_150",        "name": "📆 活跃150天",   "desc": "累计活跃 150 天",      "category": "cumulative","bonus": 60},
-    {"id": "active_299",        "name": "📆 活跃299天",   "desc": "累计活跃 299 天",      "category": "cumulative","bonus": 80},
-    {"id": "active_365",        "name": "🗓️ 活跃365天",   "desc": "累计活跃 365 天",      "category": "cumulative","bonus": 100},
-    # —— 阻力复盘进阶 ——
-    {"id": "resistance_50",     "name": "🛡️ 阻力五十",   "desc": "阻力复盘满 50 次",     "category": "cumulative","bonus": 25},
-    {"id": "resistance_100",    "name": "🛡️ 阻力百条",   "desc": "阻力复盘满 100 次",    "category": "cumulative","bonus": 40},
-    {"id": "resistance_streak_7","name": "📋 连续阻力7天","desc": "连续 7 天做阻力复盘",   "category": "daily",     "bonus": 20},
-    # —— 积分里程碑 ——
-    {"id": "two_thousand_pts",  "name": "💰 两千分",      "desc": "总积分突破 2000",      "category": "cumulative","bonus": 30},
-    {"id": "ten_thousand_pts",  "name": "🏦 万分大佬",    "desc": "总积分突破 10000",     "category": "cumulative","bonus": 150},
-    # —— 兑换消耗 ——
-    {"id": "consumed_500",      "name": "🛒 消耗500分",   "desc": "兑换累计消耗 500",     "category": "cumulative","bonus": 25},
-    {"id": "consumed_1000",     "name": "🛒 消耗1000分",  "desc": "兑换累计消耗 1000",    "category": "cumulative","bonus": 40},
-    {"id": "consumed_2000",     "name": "🛒 消耗2000分",  "desc": "兑换累计消耗 2000",    "category": "cumulative","bonus": 60},
-    {"id": "consumed_5000",     "name": "🛒 消耗5000分",  "desc": "兑换累计消耗 5000",    "category": "cumulative","bonus": 100},
-    # —— 其他 ——
-    {"id": "weekly_report_4",   "name": "📊 周报连续4周","desc": "连续 4 周生成周报",     "category": "special",   "bonus": 20},
-    {"id": "weekly_200",        "name": "⚡ 单周200分",   "desc": "一周内总得分超 200",    "category": "daily",     "bonus": 25},
-    {"id": "monthly_20",        "name": "🌙 月度20天",    "desc": "单月活跃超 20 天",     "category": "daily",     "bonus": 30},
-    {"id": "comeback_3day",     "name": "🔄 东山再起",    "desc": "断签 3 天后重新记录",   "category": "special",   "bonus": 10},
+    # —— 新手启程 ——
+    {"id": "first_task",       "name": "🎮 启程",      "desc": "第一次记录任务",       "category": "starter",   "bonus": 20},
+    {"id": "first_resistance", "name": "🧠 勇敢直面",  "desc": "第一次阻力复盘",       "category": "starter",   "bonus": 20},
+    {"id": "first_redeem",     "name": "🎁 首次犒赏",  "desc": "第一次兑换奖励",       "category": "starter",   "bonus": 20},
+    {"id": "first_backdate",   "name": "📅 时光回溯",  "desc": "第一次补记过去日期的任务", "category": "starter", "bonus": 20},
+    # —— 连击记录 ——
+    {"id": "streak_7",         "name": "🔥 一周不断",  "desc": "连续记录 7 天",        "category": "streak",    "bonus": 40},
+    {"id": "streak_30",        "name": "💎 月度连击",  "desc": "连续记录 30 天",       "category": "streak",    "bonus": 60},
+    {"id": "streak_50",        "name": "🔥 连击五十",  "desc": "连续记录 50 天",       "category": "streak",    "bonus": 80},
+    {"id": "streak_100",       "name": "💎 百日连击",  "desc": "连续记录 100 天",      "category": "streak",    "bonus": 120},
+    {"id": "records_100",      "name": "📝 百条记录",  "desc": "累计记录满 100 条",    "category": "streak",    "bonus": 20},
+    {"id": "records_500",      "name": "📚 五百记录",  "desc": "累计记录满 500 条",    "category": "streak",    "bonus": 40},
     # —— 签到系列 ——
-    {"id": "checkin_30",        "name": "📅 签到30天",   "desc": "连续签到 30 天",        "category": "checkin",   "bonus": 20},
-    {"id": "checkin_50",        "name": "📆 签到50天",   "desc": "连续签到 50 天",        "category": "checkin",   "bonus": 20},
-    {"id": "checkin_100",       "name": "💯 签到100天",  "desc": "连续签到 100 天",       "category": "checkin",   "bonus": 20},
-    {"id": "checkin_222",       "name": "🎯 签到222天",  "desc": "连续签到 222 天",       "category": "checkin",   "bonus": 20},
-    {"id": "checkin_total_100", "name": "📦 累计100天",  "desc": "累计签到 100 天",       "category": "checkin",   "bonus": 20},
-    {"id": "checkin_total_222", "name": "📦 累计222天",  "desc": "累计签到 222 天",       "category": "checkin",   "bonus": 20},
-    {"id": "checkin_total_365", "name": "🗓️ 累计365天",  "desc": "累计签到 365 天",       "category": "checkin",   "bonus": 100},
-    # —— 记录条数 ——
-    {"id": "records_100",          "name": "📝 百条记录",    "desc": "累计记录满 100 条",        "category": "cumulative", "bonus": 20},
-    {"id": "records_500",          "name": "📚 五百记录",    "desc": "累计记录满 500 条",        "category": "cumulative", "bonus": 40},
-    # —— 连击进阶 / 属性进阶 ——
-    {"id": "streak_50",            "name": "🔥 连击五十",    "desc": "连续记录 50 天",           "category": "special",    "bonus": 80},
-    {"id": "streak_100",           "name": "💎 百日连击",    "desc": "连续记录 100 天",          "category": "special",    "bonus": 120},
-    {"id": "stat_1000",            "name": "🌟 千点属性",    "desc": "任一属性突破 1000",        "category": "special",    "bonus": 80},
-    # —— 单日 / 补记 / 时段 ——
-    {"id": "daily_10_records",     "name": "⚡ 高产一日",    "desc": "单日记录 10 条以上",       "category": "daily",      "bonus": 40},
-    {"id": "backdate_10",          "name": "📅 时光旅人",    "desc": "补记过去日期满 10 条",     "category": "special",    "bonus": 30},
-    {"id": "early_bird_10",        "name": "🌅 早鸟",        "desc": "清晨（5-8点）记录满 10 次", "category": "special",    "bonus": 30},
-    {"id": "night_owl_10",         "name": "🦉 夜猫子",      "desc": "深夜（22点后）记录满 10 次", "category": "special",    "bonus": 30},
-    # —— 心情 / 阻力 / 签到进阶 ——
-    {"id": "mood_streak_30",       "name": "🎭 心情常驻",    "desc": "连续 30 天记录心情",       "category": "mood",       "bonus": 40},
-    {"id": "resistance_streak_30", "name": "🛡️ 连续阻力30天", "desc": "连续 30 天做阻力复盘",   "category": "daily",      "bonus": 40},
-    {"id": "checkin_streak_7",     "name": "📅 一周全勤",    "desc": "连续签到 7 天",            "category": "checkin",    "bonus": 20},
-    # —— 总体等级系列（每 100 分 = 1 级；Lv1/5/10/20/50/100 由总分成就覆盖）——
-    {"id": "level_15",             "name": "🎖️ Lv.15",      "desc": "总等级达到 15",            "category": "milestone",  "bonus": 30},
-    {"id": "level_25",             "name": "🎖️ Lv.25",      "desc": "总等级达到 25",            "category": "milestone",  "bonus": 40},
-    {"id": "level_30",             "name": "🎖️ Lv.30",      "desc": "总等级达到 30",            "category": "milestone",  "bonus": 50},
-    {"id": "level_40",             "name": "🎖️ Lv.40",      "desc": "总等级达到 40",            "category": "milestone",  "bonus": 60},
-    {"id": "level_75",             "name": "🎖️ Lv.75",      "desc": "总等级达到 75",            "category": "milestone",  "bonus": 120},
-    {"id": "level_150",            "name": "🎖️ Lv.150",     "desc": "总等级达到 150",           "category": "milestone",  "bonus": 200},
+    {"id": "checkin_streak_7", "name": "📅 一周全勤",  "desc": "连续签到 7 天",        "category": "checkin",   "bonus": 20},
+    {"id": "checkin_30",       "name": "📅 签到30天",  "desc": "连续签到 30 天",       "category": "checkin",   "bonus": 20},
+    {"id": "checkin_50",       "name": "📆 签到50天",  "desc": "连续签到 50 天",       "category": "checkin",   "bonus": 20},
+    {"id": "checkin_100",      "name": "💯 签到100天", "desc": "连续签到 100 天",      "category": "checkin",   "bonus": 20},
+    {"id": "checkin_222",      "name": "🎯 签到222天", "desc": "连续签到 222 天",      "category": "checkin",   "bonus": 20},
+    {"id": "checkin_total_100","name": "📦 累计100天", "desc": "累计签到 100 天",      "category": "checkin",   "bonus": 20},
+    {"id": "checkin_total_222","name": "📦 累计222天", "desc": "累计签到 222 天",      "category": "checkin",   "bonus": 20},
+    {"id": "checkin_total_365","name": "🗓️ 累计365天", "desc": "累计签到 365 天",      "category": "checkin",   "bonus": 100},
+    # —— 活跃成就 ——
+    {"id": "week_active",      "name": "🗓️ 一周坚持",  "desc": "活跃天数满 7 天",      "category": "active",    "bonus": 20},
+    {"id": "month_active",     "name": "📅 月度达人",  "desc": "活跃天数满 30 天",     "category": "active",    "bonus": 40},
+    {"id": "active_50",        "name": "📆 活跃50天",  "desc": "累计活跃 50 天",       "category": "active",    "bonus": 30},
+    {"id": "hundred_active",   "name": "💯 百日筑基",  "desc": "活跃天数满 100 天",    "category": "active",    "bonus": 60},
+    {"id": "active_150",       "name": "📆 活跃150天", "desc": "累计活跃 150 天",      "category": "active",    "bonus": 60},
+    {"id": "active_299",       "name": "📆 活跃299天", "desc": "累计活跃 299 天",      "category": "active",    "bonus": 80},
+    {"id": "active_365",       "name": "🗓️ 活跃365天", "desc": "累计活跃 365 天",      "category": "active",    "bonus": 100},
+    # —— 积分等级 ——
+    {"id": "hundred_pts",      "name": "💯 百分起步",  "desc": "总积分突破 100",       "category": "points",    "bonus": 20},
+    {"id": "five_hundred_pts", "name": "🏆 五百达成",  "desc": "总积分突破 500",       "category": "points",    "bonus": 30},
+    {"id": "thousand_pts",     "name": "🌟 千分玩家",  "desc": "总积分突破 1000",      "category": "points",    "bonus": 50},
+    {"id": "two_thousand_pts", "name": "💰 两千分",    "desc": "总积分突破 2000",      "category": "points",    "bonus": 30},
+    {"id": "five_thousand_pts","name": "💎 万分之路",  "desc": "总积分突破 5000",      "category": "points",    "bonus": 60},
+    {"id": "ten_thousand_pts", "name": "🏦 万分大佬",  "desc": "总积分突破 10000",     "category": "points",    "bonus": 150},
+    {"id": "level_15",         "name": "🎖️ Lv.15",    "desc": "总等级达到 15",        "category": "points",    "bonus": 30},
+    {"id": "level_25",         "name": "🎖️ Lv.25",    "desc": "总等级达到 25",        "category": "points",    "bonus": 40},
+    {"id": "level_30",         "name": "🎖️ Lv.30",    "desc": "总等级达到 30",        "category": "points",    "bonus": 50},
+    {"id": "level_40",         "name": "🎖️ Lv.40",    "desc": "总等级达到 40",        "category": "points",    "bonus": 60},
+    {"id": "level_75",         "name": "🎖️ Lv.75",    "desc": "总等级达到 75",        "category": "points",    "bonus": 120},
+    {"id": "level_150",        "name": "🎖️ Lv.150",   "desc": "总等级达到 150",       "category": "points",    "bonus": 200},
+    # —— 属性成长 ——
+    {"id": "stat_100",         "name": "⭐ 百分属性",  "desc": "任一属性突破 100",     "category": "attribute", "bonus": 25},
+    {"id": "stat_500",         "name": "🌟 属性大师",  "desc": "任一属性突破 500",     "category": "attribute", "bonus": 50},
+    {"id": "stat_1000",        "name": "🌟 千点属性",  "desc": "任一属性突破 1000",    "category": "attribute", "bonus": 80},
+    {"id": "all_attr_lv10",    "name": "🎯 全属性Lv10","desc": "四项属性均达 Lv10",    "category": "attribute", "bonus": 50},
+    {"id": "all_attr_lv15",    "name": "🎯 全属性Lv15","desc": "四项属性均达 Lv15",    "category": "attribute", "bonus": 80},
+    {"id": "all_attr_lv20",    "name": "🎯 全属性Lv20","desc": "四项属性均达 Lv20",    "category": "attribute", "bonus": 120},
+    {"id": "all_attr_lv30",    "name": "🎯 全属性Lv30","desc": "四项属性均达 Lv30",    "category": "attribute", "bonus": 200},
+    {"id": "all_attr_lv40",    "name": "🎯 全属性Lv40","desc": "四项属性均达 Lv40",    "category": "attribute", "bonus": 400},
+    # —— 阻力复盘 ——
+    {"id": "resistance_10",    "name": "🧠 直面者",    "desc": "阻力复盘满 10 次",     "category": "resistance", "bonus": 20},
+    {"id": "resistance_30",    "name": "💪 阻力克星",  "desc": "阻力复盘满 30 次",     "category": "resistance", "bonus": 40},
+    {"id": "resistance_50",    "name": "🛡️ 阻力五十", "desc": "阻力复盘满 50 次",     "category": "resistance", "bonus": 25},
+    {"id": "resistance_100",   "name": "🛡️ 阻力百条", "desc": "阻力复盘满 100 次",    "category": "resistance", "bonus": 40},
+    # —— 心情系列 ——
+    {"id": "mood_10",          "name": "📝 心情记录员","desc": "记录 10 次心情",       "category": "mood",      "bonus": 15},
+    {"id": "mood_50",          "name": "🎭 心情达人",  "desc": "记录 50 次心情",       "category": "mood",      "bonus": 30},
+    # —— 兑换成就 ——
+    {"id": "redeem_5",         "name": "🎁 懂得犒赏",  "desc": "奖励兑换满 5 次",      "category": "redeem",    "bonus": 15},
+    {"id": "redeem_10",        "name": "🏆 生活达人",  "desc": "奖励兑换满 10 次",     "category": "redeem",    "bonus": 30},
+    {"id": "consumed_500",     "name": "🛒 消耗500分", "desc": "兑换累计消耗 500",     "category": "redeem",    "bonus": 25},
+    {"id": "consumed_1000",    "name": "🛒 消耗1000分","desc": "兑换累计消耗 1000",    "category": "redeem",    "bonus": 40},
+    {"id": "consumed_2000",    "name": "🛒 消耗2000分","desc": "兑换累计消耗 2000",    "category": "redeem",    "bonus": 60},
+    {"id": "consumed_5000",    "name": "🛒 消耗5000分","desc": "兑换累计消耗 5000",    "category": "redeem",    "bonus": 100},
+    # —— 挑战成就 ——
+    {"id": "daily_30",         "name": "⚡ 小有产出",  "desc": "单日得分突破 30",      "category": "daily",     "bonus": 20},
+    {"id": "daily_50",         "name": "🔥 产出爆发",  "desc": "单日得分突破 50",      "category": "daily",     "bonus": 40},
+    {"id": "daily_100",        "name": "💥 超级加倍",  "desc": "单日得分突破 100",     "category": "daily",     "bonus": 50},
+    {"id": "daily_5_records",  "name": "📝 忙碌一天",  "desc": "单日记录 5 条以上",    "category": "daily",     "bonus": 25},
+    {"id": "daily_10_records", "name": "⚡ 高产一日",  "desc": "单日记录 10 条以上",   "category": "daily",     "bonus": 40},
+    {"id": "daily_balanced",   "name": "⚖️ 均衡发展",  "desc": "单日四维属性全部有得分", "category": "daily",   "bonus": 30},
+    {"id": "weekly_200",       "name": "⚡ 单周200分", "desc": "一周内总得分超 200",   "category": "daily",     "bonus": 25},
+    {"id": "monthly_20",       "name": "🌙 月度20天",  "desc": "单月活跃超 20 天",     "category": "daily",     "bonus": 30},
+    # —— 特殊时刻 ——
+    {"id": "comeback_3day",    "name": "🔄 东山再起",  "desc": "断签 3 天后重新记录",  "category": "special",   "bonus": 10},
+    {"id": "backdate_10",      "name": "📅 时光旅人",  "desc": "补记过去日期满 10 条", "category": "special",   "bonus": 30},
+    {"id": "early_bird_10",    "name": "🌅 早鸟",      "desc": "清晨（5-8点）记录满 10 次", "category": "special", "bonus": 30},
+    {"id": "night_owl_10",     "name": "🦉 夜猫子",    "desc": "深夜（22点后）记录满 10 次", "category": "special", "bonus": 30},
+    {"id": "weekly_report_4",  "name": "📊 周报连续4周","desc": "连续 4 周生成周报",   "category": "special",   "bonus": 20},
 ]
 
 
@@ -420,8 +411,6 @@ ACH_TARGETS = {
     "resistance_30":       ("resistance_count", 30),
     "resistance_50":       ("resistance_count", 50),
     "resistance_100":      ("resistance_count", 100),
-    "resistance_streak_7": ("resistance_streak", 7),
-    "resistance_streak_30": ("resistance_streak", 30),
     # 兑换
     "first_redeem":        ("redeem_count", 1),
     "redeem_5":            ("redeem_count", 5),
@@ -464,8 +453,6 @@ ACH_TARGETS = {
     # 心情
     "mood_10":             ("mood_count", 10),
     "mood_50":             ("mood_count", 50),
-    "mood_streak_7":       ("mood_streak", 7),
-    "mood_streak_30":      ("mood_streak", 30),
     # 周报
     "weekly_report_4":     ("weekly_report_streak", 4),
     # 签到
@@ -511,12 +498,6 @@ def compute_achievement_metrics(data):
     # 心情统计
     mood_entries = [e for e in action_log if e.get("mood")]
     mood_count = len(mood_entries)
-    mood_dates = set(e.get("time", "")[:10] for e in mood_entries if e.get("time"))
-    mood_streak = calc_streak(mood_dates, today_date)
-
-    # 阻力复盘连续天数
-    resist_dates = set(r.get("time", "")[:10] for r in resistance_log if r.get("time"))
-    resistance_streak = calc_streak(resist_dates, today_date)
 
     # 兑换
     total_consumed = sum(r.get("cost", 0) for r in redemption_log)
@@ -598,7 +579,6 @@ def compute_achievement_metrics(data):
         "max_stat": max_stat,
         "min_stat": min_stat,
         "resistance_count": len(resistance_log),
-        "resistance_streak": resistance_streak,
         "redeem_count": len(redemption_log),
         "total_consumed": total_consumed,
         "today_total": today_total,
@@ -612,7 +592,6 @@ def compute_achievement_metrics(data):
         "early_bird_count": early_bird_count,
         "night_owl_count": night_owl_count,
         "mood_count": mood_count,
-        "mood_streak": mood_streak,
         "weekly_report_streak": weekly_report_streak,
         "checkin_streak": checkin_streak,
         "total_checkin_days": total_checkin_days,
@@ -3449,28 +3428,50 @@ def page_achievements():
     today_for_new = now_local().date()
 
     cat_labels = {
-        "cumulative": "📈 累积型成就",
-        "daily": "📅 单日型成就",
-        "special": "🎯 特殊行为型成就",
-        "mood": "🎭 心情系列成就",
-        "milestone": "🎯 里程碑成就",
-        "checkin": "📋 签到系列成就",
+        "starter":    "🌱 新手启程",
+        "streak":     "🔥 连击记录",
+        "checkin":    "📋 签到系列",
+        "active":     "📈 活跃成就",
+        "points":     "💰 积分等级",
+        "attribute":  "⭐ 属性成长",
+        "resistance": "🧠 阻力复盘",
+        "mood":       "🎭 心情系列",
+        "redeem":     "🎁 兑换成就",
+        "daily":      "⚡ 挑战成就",
+        "special":    "🎯 特殊时刻",
     }
     cat_colors = {
-        "cumulative": "#58CC02",
-        "daily": "#1CB0F6",
-        "special": "#CE82FF",
-        "mood": "#FF6B9D",
-        "milestone": "#FFA500",
-        "checkin": "#20B2AA",
+        "starter":    "#58CC02",
+        "streak":     "#FF4B4B",
+        "checkin":    "#20B2AA",
+        "active":     "#1CB0F6",
+        "points":     "#F5A623",
+        "attribute":  "#CE82FF",
+        "resistance": "#FF8C42",
+        "mood":       "#FF6B9D",
+        "redeem":     "#E91E63",
+        "daily":      "#3D5AFE",
+        "special":    "#607D8B",
     }
+    # 挑战组内指标展示顺序：单日得分 → 单日条数 → 四维均衡 → 单周 → 单月
+    _daily_metric_order = ["today_total", "today_records", "all_four", "this_week_total", "monthly_active_days"]
 
-    for cat in ["cumulative", "daily", "special", "mood", "milestone", "checkin"]:
+    def _ach_sort_key(ach):
+        target = ACH_TARGETS.get(ach.get("id"))
+        if target is None:
+            return (2, 0, ach.get("name", ""))
+        metric, threshold = target
+        if ach.get("category") == "daily":
+            idx = _daily_metric_order.index(metric) if metric in _daily_metric_order else len(_daily_metric_order)
+            return (0, idx, threshold)
+        return (1, metric, threshold)
+
+    for cat in ["starter", "streak", "checkin", "active", "points", "attribute", "resistance", "mood", "redeem", "daily", "special"]:
         cat_achs = [a for a in achievements if a.get("category") == cat]
         if not cat_achs:
             continue
-        # 同类成就按 bonus 升序排列（简单的在前）
-        cat_achs = sorted(cat_achs, key=lambda a: a.get("bonus", 0))
+        # 组内按指标+阈值排序：同系列阈值递增，进度读起来有递进感
+        cat_achs = sorted(cat_achs, key=_ach_sort_key)
         st.markdown(f"#### {cat_labels.get(cat, cat)}")
 
         badges_html = '<div style="display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px;">'
