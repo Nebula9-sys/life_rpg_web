@@ -1711,7 +1711,7 @@ h4, h5, h6 { color: [tx_s] !important; }
     font-weight: 500;
 }
 .stMarkdown .title-badge-sub { color: [tx_s] !important; }
-/* 称号馆：锁定称号卡片（与按钮同尺寸，虚线边框示未激活） */
+/* 称号馆：锁定称号卡片（按钮同款外观 + 整体压暗，读作“未激活”） */
 .title-locked {
     display: flex;
     flex-direction: column;
@@ -1722,18 +1722,23 @@ h4, h5, h6 { color: [tx_s] !important; }
     padding: 0.4rem 0.9rem;
     margin-bottom: 0.35rem;
     border-radius: 10px;
-    border: 1.5px dashed [bd];
-    background-color: [card];
+    border: 1px solid [bd];
+    background-color: [btn];
     color: [tx_s];
     font-size: 0.92rem;
     font-weight: 500;
     line-height: 1.35;
+    text-align: center;
+    opacity: 0.65;
+    cursor: not-allowed;
 }
 .title-locked .hint {
     font-size: 0.74rem;
     font-weight: 400;
-    opacity: 0.75;
+    opacity: 0.8;
 }
+.stMarkdown .title-locked,
+.stMarkdown .title-locked span { color: [tx_s] !important; }
 [data-testid="stNumberInput"] input {
     background-color: [inp];
     color: [tx_m] !important;
@@ -3653,6 +3658,7 @@ def page_achievements():
                         _label,
                         key=f"wear_{_tach_id}",
                         use_container_width=True,
+                        type="primary" if _is_worn else "secondary",
                         disabled=(not _is_worn and _hall_full),
                     ):
                         if _is_worn:
