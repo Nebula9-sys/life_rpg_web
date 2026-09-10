@@ -778,21 +778,24 @@ TITLE_UNLOCK_DEFS = [
 
 
 def get_titles(data):
-    """返回 (主称号, 属性称号)。自选称号优先（需对应成就仍解锁），否则按总等级。"""
-    sel = data.get("selected_title")
-    if sel:
-        unlocked_ids = {a.get("id") for a in data.get("achievements", []) if a.get("unlocked")}
-        for name, ach_id, _ in TITLE_UNLOCK_DEFS:
-            if name == sel and ach_id in unlocked_ids:
-                return sel, None
+    """返回 (主称号列表, 属性副称号)。佩戴的称号需对应成就仍解锁，最多 4 个；
+    没佩戴任何称号时按总等级显示。属性副称号始终跟随最高属性。"""
+    stats = {k: v for k, v in data.get("stats", {}).items() if isinstance(v, (int, float))}
+    attr_title = ATTR_TITLES.get(max(stats, key=stats.get)) if stats else None
+    unlocked_ids = {a.get("id") for a in data.get("achievements", []) if a.get("unlocked")}
+    valid_names = {name for name, ach_id, _ in TITLE_UNLOCK_DEFS if ach_id in unlocked_ids}
+    worn = []
+    for name in data.get("selected_titles", []) or []:
+        if name in valid_names and name not in worn:
+            worn.append(name)
+    if worn:
+        return worn[:4], attr_title
     lv = data.get("total_earned", 0) // 100
     main = TITLE_DEFS[0][1]
     for min_lv, t in TITLE_DEFS:
         if lv >= min_lv:
             main = t
-    stats = {k: v for k, v in data.get("stats", {}).items() if isinstance(v, (int, float))}
-    attr_title = ATTR_TITLES.get(max(stats, key=stats.get)) if stats else None
-    return main, attr_title
+    return [main], attr_title
 
 
 # ---------- 周报 / 月报生成 ----------
@@ -1071,7 +1074,7 @@ def new_data():
         "rev": 0,               # 存档版本号（每次保存 +1）
         "saved_at": "",         # 最后一次保存时间
         "reports": [],          # 周报/月报存档
-        "selected_title": None, # 自选称号（称号馆佩戴；None = 按等级显示）
+        "selected_titles": [],  # 佩戴中的称号（称号馆；空 = 按等级显示主称号）
         "checkin_log": [],      # 每日签到日期记录 ["YYYY-MM-DD", ...]
         "checkin_cards": {"bought": 0, "used": 0, "earned_seen": 0},  # 补签卡：已购/已用/已结算的赠送进度
         "repaired_checkins": [],   # 用补签卡补上的日期（不计送卡进度、不补发当日积分）
@@ -1327,6 +1330,10 @@ def merge_data(local, remote):
     merged["checkin_log"] = sorted(l_ck | r_ck)
     merged["rewards"] = _merge_by_name(local.get("rewards", []), remote.get("rewards", []))
     merged["quick_actions"] = _merge_by_name(local.get("quick_actions", []), remote.get("quick_actions", []))
+    # 佩戴称号取并集（装饰性字段，并集比取一侧丢失友好；上限 4 由迁移收口）
+    _lt_titles = list(local.get("selected_titles", []))
+    _rt_titles = list(remote.get("selected_titles", []))
+    merged["selected_titles"] = _lt_titles + [t for t in _rt_titles if t not in _lt_titles]
     # 成就：unlocked 取两侧的或（bonus 积分以日志为准，迁移时会重新核对）
     r_achs = {a.get("id"): a for a in remote.get("achievements", [])}
     for a in merged.get("achievements", []):
@@ -1370,6 +1377,12 @@ def _migrate_data(data):
     for r in data.get("rewards", []):
         r.pop("claimed", None)
         r["cost"] = max(r.get("cost", 1), 1)
+    # 旧版单称号字段 → 佩戴列表（base 补齐后 selected_titles 一定存在）
+    _old_sel = data.pop("selected_title", None)
+    if _old_sel and _old_sel not in data.get("selected_titles", []):
+        data.setdefault("selected_titles", []).insert(0, _old_sel)
+    if isinstance(data.get("selected_titles"), list):
+        data["selected_titles"] = data["selected_titles"][:4]
     # 合并新成就定义 + 更新已有成就的 bonus/desc（保留 unlocked 状态）
     # 先清理已移除的旧成就（不在 ACHIEVEMENT_DEFS 中的）
     valid_ids = {a["id"] for a in ACHIEVEMENT_DEFS}
@@ -1698,6 +1711,29 @@ h4, h5, h6 { color: [tx_s] !important; }
     font-weight: 500;
 }
 .stMarkdown .title-badge-sub { color: [tx_s] !important; }
+/* 称号馆：锁定称号卡片（与按钮同尺寸，虚线边框示未激活） */
+.title-locked {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 45px;
+    padding: 0.4rem 0.9rem;
+    margin-bottom: 0.35rem;
+    border-radius: 10px;
+    border: 1.5px dashed [bd];
+    background-color: [card];
+    color: [tx_s];
+    font-size: 0.92rem;
+    font-weight: 500;
+    line-height: 1.35;
+}
+.title-locked .hint {
+    font-size: 0.74rem;
+    font-weight: 400;
+    opacity: 0.75;
+}
 [data-testid="stNumberInput"] input {
     background-color: [inp];
     color: [tx_m] !important;
@@ -1778,6 +1814,15 @@ code {
     .title-badge-main, .title-badge-sub {
         font-size: 0.88rem !important;
         padding: 0.18rem 0.7rem !important;
+    }
+    /* 称号馆锁定卡片小一点，与按钮字号一致 */
+    .title-locked {
+        min-height: 40px;
+        font-size: 0.9rem;
+        padding: 0.35rem 0.8rem;
+    }
+    .title-locked .hint {
+        font-size: 0.7rem;
     }
     /* 表格缩小 */
     .stTable {
@@ -1983,7 +2028,7 @@ with st.sidebar:
     # 侧边栏总等级简要显示
     _sb_total = data.get("total_earned", 0)
     _sb_lv = _sb_total // 100
-    _sb_title, _sb_attr_title = get_titles(data)
+    _sb_titles, _sb_attr_title = get_titles(data)
     st.markdown(
         f'<div style="display: flex; justify-content: space-between; align-items: center; '
         f'padding: 8px 12px; border-radius: 8px; margin-bottom: 4px;'
@@ -1992,7 +2037,7 @@ with st.sidebar:
         f'<span style="font-size: 1.3rem; font-weight: 800;">Lv.{_sb_lv}</span>'
         f'</div>'
         f'<div style="text-align: center; font-size: 0.8rem; opacity: 0.8; margin-bottom: 2px;">'
-        + _sb_title + (f' · {_sb_attr_title}' if _sb_attr_title else '') +
+        + " · ".join(_sb_titles) + (f' · {_sb_attr_title}' if _sb_attr_title else '') +
         f'</div>',
         unsafe_allow_html=True,
     )
@@ -3590,22 +3635,39 @@ def page_achievements():
 
     # ---- 称号馆 ----
     st.markdown("#### 🎖️ 称号馆")
-    st.caption("达成指定成就解锁称号，点击佩戴后替换属性面板顶部的等级称号；再次点击可卸下")
+    _worn_list = list(data.get("selected_titles", []))
+    _hall_full = len(_worn_list) >= 4
+    st.caption(
+        f"点击佩戴 / 再次点击卸下（当前 {len(_worn_list)}/4）。"
+        "佩戴的称号显示在属性面板顶部，属性副称号保留；不佩戴则按总等级显示"
+    )
     _unlocked_ids = {a.get("id") for a in achievements if a.get("unlocked")}
-    _sel_title = data.get("selected_title")
     for _t0 in range(0, len(TITLE_UNLOCK_DEFS), 3):
         _tcols = st.columns(3)
         for _ti, (_tname, _tach_id, _thow) in enumerate(TITLE_UNLOCK_DEFS[_t0:_t0 + 3]):
             with _tcols[_ti]:
                 if _tach_id in _unlocked_ids:
-                    _label = f"✅ {_tname}" if _sel_title == _tname else _tname
-                    if st.button(_label, key=f"wear_{_tach_id}", use_container_width=True):
-                        data["selected_title"] = None if _sel_title == _tname else _tname
+                    _is_worn = _tname in _worn_list
+                    _label = f"✅ {_tname}" if _is_worn else _tname
+                    if st.button(
+                        _label,
+                        key=f"wear_{_tach_id}",
+                        use_container_width=True,
+                        disabled=(not _is_worn and _hall_full),
+                    ):
+                        if _is_worn:
+                            data["selected_titles"] = [t for t in _worn_list if t != _tname]
+                        else:
+                            data["selected_titles"] = _worn_list + [_tname]
                         save_data(data)
                         st.session_state.data = data
                         st.rerun()
                 else:
-                    st.caption(f"🔒 {_tname} · {_thow}")
+                    st.markdown(
+                        f'<div class="title-locked">{_tname}'
+                        f'<span class="hint">🔒 {_thow}</span></div>',
+                        unsafe_allow_html=True,
+                    )
     st.markdown("---")
 
     # 指标算一次，供锁定成就显示进度（与判定共用同一来源）
@@ -3814,8 +3876,8 @@ with stats_placeholder:
 
     st.markdown("---")
     st.markdown("## ⚔️ 属性面板")
-    _panel_main, _panel_attr = get_titles(data)
-    _badges_html = f'<span class="title-badge-main">{_panel_main}</span>'
+    _panel_mains, _panel_attr = get_titles(data)
+    _badges_html = "".join(f'<span class="title-badge-main">{t}</span>' for t in _panel_mains)
     if _panel_attr:
         _badges_html += f' <span class="title-badge-sub">{_panel_attr}</span>'
     st.markdown(_badges_html, unsafe_allow_html=True)
