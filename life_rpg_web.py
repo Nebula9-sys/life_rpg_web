@@ -33,10 +33,6 @@ except ImportError:
 SUPABASE_URL     = ""       # 🔗 Supabase 项目 URL（与清单程序相同）
 SUPABASE_ANON_KEY = ""      # 🔑 Supabase 可发布密钥（与清单程序相同）
 
-# —— 旧存档迁移用（JSONBin → Supabase 首次登录时自动迁移，迁移成功后可删）——
-JSONBIN_API_KEY  = ""                # 🔑 JSONBin API Key
-JSONBIN_BIN_ID   = ""                # 📦 JSONBin Bin ID
-
 TIMEZONE_OFFSET = 8
 
 # ═══════════════════════════════════════════════════
@@ -3277,13 +3273,21 @@ def page_stats():
                 fill="toself",
                 name=f"本月（{_this_m}）",
             ))
+            # 锁定径向范围（两月最大值），并关闭拖拽/缩放/工具栏，
+            # 防止误拖后视图回不来（雷达图没有好找的复位按钮）
+            _radar_vals = [v for mv in (_mv_this, _mv_last) for v in mv.values()]
             fig_radar.update_layout(
-                polar=dict(radialaxis=dict(showticklabels=False)),
+                polar=dict(radialaxis=dict(showticklabels=False, range=[0, max(_radar_vals)])),
                 height=360,
                 margin=dict(t=50, b=20, l=50, r=50),
                 legend=dict(orientation="h", yanchor="bottom", y=1.05),
+                dragmode=False,
             )
-            st.plotly_chart(fig_radar, use_container_width=True)
+            st.plotly_chart(
+                fig_radar,
+                use_container_width=True,
+                config={"displayModeBar": False, "scrollZoom": False},
+            )
         else:
             st.info("本月和上月还没有属性数据。")
 
@@ -3317,6 +3321,8 @@ def page_stats():
             mood_labels = [m for m in mood_display_order if m in mood_data]
             mood_labels += [m for m in mood_data if m not in mood_display_order]
 
+            # 颜色按心情绑定而非按位置，两图排序不同也能保持含义一致
+            _mood_color = dict(zip(mood_display_order, ["#7fc5ca", "#51cf66", "#ffe066", "#ffa94d", "#ff5c5c"]))
             avg_pts = [round(mood_data[m]["total_pts"] / max(mood_data[m]["count"], 1), 1) for m in mood_labels]
             counts = [mood_data[m]["count"] for m in mood_labels]
 
@@ -3326,7 +3332,7 @@ def page_stats():
                 fig_mood_bar = go.Figure(data=[go.Bar(
                     x=mood_labels,
                     y=avg_pts,
-                    marker_color=["#7fc5ca", "#51cf66", "#ffe066", "#ffa94d", "#ff5c5c"][:len(mood_labels)],
+                    marker_color=[_mood_color.get(m, "#7a9eb0") for m in mood_labels],
                     text=[f"{v} pts" for v in avg_pts],
                     textposition="outside",
                 )])
@@ -3341,20 +3347,29 @@ def page_stats():
 
             with mc2:
                 st.caption("各心情记录次数")
-                fig_mood_pie = go.Figure(data=[go.Pie(
-                    labels=mood_labels,
-                    values=counts,
-                    hole=0.5,
-                    textinfo="label+percent",
+                # 环形图无法缩放（无坐标轴），极端占比下小切片永远是看不见的细线；
+                # 横向条形图每个心情独占一行，次数与占比始终完整可读
+                _total_cnt = sum(counts)
+                _cnt_order = sorted(mood_labels, key=lambda m: mood_data[m]["count"])
+                fig_mood_cnt = go.Figure(data=[go.Bar(
+                    x=[mood_data[m]["count"] for m in _cnt_order],
+                    y=_cnt_order,
+                    orientation="h",
+                    marker_color=[_mood_color.get(m, "#7a9eb0") for m in _cnt_order],
+                    text=[f'{mood_data[m]["count"]} 次 · {mood_data[m]["count"] / _total_cnt * 100:.1f}%'
+                          for m in _cnt_order],
                     textposition="outside",
+                    cliponaxis=False,
                 )])
-                fig_mood_pie.update_layout(
-                    # 外部标签需要足够的边缘空间，否则被裁切（极端占比时小切片标签会向外扇开）
-                    height=320,
-                    margin=dict(t=60, b=60, l=30, r=30),
+                fig_mood_cnt.update_layout(
+                    height=250,
+                    margin=dict(t=10, b=10, l=10, r=70),
+                    # 右侧 30% 留白容纳条形外的文字标签
+                    xaxis=dict(showticklabels=False, showgrid=False, range=[0, max(counts) * 1.3]),
                     showlegend=False,
+                    bargap=0.35,
                 )
-                st.plotly_chart(fig_mood_pie, use_container_width=True)
+                st.plotly_chart(fig_mood_cnt, use_container_width=True)
 
             # 文字洞察
             best_mood = max(mood_labels, key=lambda m: mood_data[m]["total_pts"] / max(mood_data[m]["count"], 1))
