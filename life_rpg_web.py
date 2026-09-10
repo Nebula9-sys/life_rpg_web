@@ -327,14 +327,21 @@ ACHIEVEMENT_DEFS = [
     {"id": "five_hundred_pts", "name": "🏆 五百达成",  "desc": "总积分突破 500",       "category": "points",    "bonus": 30},
     {"id": "thousand_pts",     "name": "🌟 千分玩家",  "desc": "总积分突破 1000",      "category": "points",    "bonus": 50},
     {"id": "two_thousand_pts", "name": "💰 两千分",    "desc": "总积分突破 2000",      "category": "points",    "bonus": 30},
-    {"id": "five_thousand_pts","name": "💎 万分之路",  "desc": "总积分突破 5000",      "category": "points",    "bonus": 60},
+    {"id": "five_thousand_pts","name": "💎 五千分",    "desc": "总积分突破 5000",      "category": "points",    "bonus": 60},
+    {"id": "six_thousand_pts", "name": "🚀 六千分",    "desc": "总积分突破 6000",      "category": "points",    "bonus": 80},
     {"id": "ten_thousand_pts", "name": "🏦 万分大佬",  "desc": "总积分突破 10000",     "category": "points",    "bonus": 150},
+    {"id": "twelve_thousand_pts","name": "🛸 一万二千","desc": "总积分突破 12000",     "category": "points",    "bonus": 180},
     {"id": "level_15",         "name": "🎖️ Lv.15",    "desc": "总等级达到 15",        "category": "points",    "bonus": 30},
     {"id": "level_25",         "name": "🎖️ Lv.25",    "desc": "总等级达到 25",        "category": "points",    "bonus": 40},
     {"id": "level_30",         "name": "🎖️ Lv.30",    "desc": "总等级达到 30",        "category": "points",    "bonus": 50},
     {"id": "level_40",         "name": "🎖️ Lv.40",    "desc": "总等级达到 40",        "category": "points",    "bonus": 60},
     {"id": "level_75",         "name": "🎖️ Lv.75",    "desc": "总等级达到 75",        "category": "points",    "bonus": 120},
     {"id": "level_150",        "name": "🎖️ Lv.150",   "desc": "总等级达到 150",       "category": "points",    "bonus": 200},
+    {"id": "pts_22222",        "name": "🎯 22222",     "desc": "总积分突破 22222",     "category": "points",    "bonus": 222},
+    {"id": "pts_33333",        "name": "🔱 33333",     "desc": "总积分突破 33333",     "category": "points",    "bonus": 333},
+    {"id": "pts_55555",        "name": "💫 55555",     "desc": "总积分突破 55555",     "category": "points",    "bonus": 555},
+    {"id": "pts_77777",        "name": "🍀 77777",     "desc": "总积分突破 77777",     "category": "points",    "bonus": 777},
+    {"id": "pts_99999",        "name": "👑 99999",     "desc": "总积分突破 99999",     "category": "points",    "bonus": 999},
     # —— 属性成长 ——
     {"id": "stat_100",         "name": "⭐ 百分属性",  "desc": "任一属性突破 100",     "category": "attribute", "bonus": 25},
     {"id": "stat_500",         "name": "🌟 属性大师",  "desc": "任一属性突破 500",     "category": "attribute", "bonus": 50},
@@ -368,11 +375,16 @@ ACHIEVEMENT_DEFS = [
     {"id": "daily_balanced",   "name": "⚖️ 均衡发展",  "desc": "单日四维属性全部有得分", "category": "daily",   "bonus": 30},
     {"id": "weekly_200",       "name": "⚡ 单周200分", "desc": "一周内总得分超 200",   "category": "daily",     "bonus": 25},
     {"id": "monthly_20",       "name": "🌙 月度20天",  "desc": "单月活跃超 20 天",     "category": "daily",     "bonus": 30},
+    # —— 记录时段 ——
+    {"id": "early_bird_10",    "name": "🌅 早鸟",      "desc": "早上（7-11点）记录满 10 次", "category": "time", "bonus": 30},
+    {"id": "noon_10",          "name": "🍱 午间出击",  "desc": "午间（11-14点）记录满 10 次", "category": "time", "bonus": 30},
+    {"id": "afternoon_10",     "name": "🌤️ 午后随笔", "desc": "午后（14-17点）记录满 10 次", "category": "time", "bonus": 30},
+    {"id": "dusk_10",          "name": "🌆 傍晚漫步",  "desc": "傍晚（17-20点）记录满 10 次", "category": "time", "bonus": 30},
+    {"id": "evening_10",       "name": "🌃 晚间收尾",  "desc": "晚间（20-22点）记录满 10 次", "category": "time", "bonus": 30},
+    {"id": "night_owl_10",     "name": "🦉 夜猫子",    "desc": "深夜（22点后及凌晨）记录满 10 次", "category": "time", "bonus": 30},
     # —— 特殊时刻 ——
     {"id": "comeback_3day",    "name": "🔄 东山再起",  "desc": "断签 3 天后重新记录",  "category": "special",   "bonus": 10},
     {"id": "backdate_10",      "name": "📅 时光旅人",  "desc": "补记过去日期满 10 条", "category": "special",   "bonus": 30},
-    {"id": "early_bird_10",    "name": "🌅 早鸟",      "desc": "清晨（5-8点）记录满 10 次", "category": "special", "bonus": 30},
-    {"id": "night_owl_10",     "name": "🦉 夜猫子",    "desc": "深夜（22点后）记录满 10 次", "category": "special", "bonus": 30},
     {"id": "weekly_report_4",  "name": "📊 周报连续4周","desc": "连续 4 周生成周报",   "category": "special",   "bonus": 20},
 ]
 
@@ -389,13 +401,20 @@ ACH_TARGETS = {
     "thousand_pts":        ("total_earned", 1000),
     "two_thousand_pts":    ("total_earned", 2000),
     "five_thousand_pts":   ("total_earned", 5000),
+    "six_thousand_pts":    ("total_earned", 6000),
     "ten_thousand_pts":    ("total_earned", 10000),
+    "twelve_thousand_pts": ("total_earned", 12000),
     "level_15":            ("total_level", 15),
     "level_25":            ("total_level", 25),
     "level_30":            ("total_level", 30),
     "level_40":            ("total_level", 40),
     "level_75":            ("total_level", 75),
     "level_150":           ("total_level", 150),
+    "pts_22222":           ("total_earned", 22222),
+    "pts_33333":           ("total_earned", 33333),
+    "pts_55555":           ("total_earned", 55555),
+    "pts_77777":           ("total_earned", 77777),
+    "pts_99999":           ("total_earned", 99999),
     # 活跃天数
     "week_active":         ("active_days", 7),
     "month_active":        ("active_days", 30),
@@ -433,7 +452,12 @@ ACH_TARGETS = {
     "records_500":         ("total_records", 500),
     "first_backdate":      ("backdate_count", 1),
     "backdate_10":         ("backdate_count", 10),
+    # 记录时段
     "early_bird_10":       ("early_bird_count", 10),
+    "noon_10":             ("noon_count", 10),
+    "afternoon_10":        ("afternoon_count", 10),
+    "dusk_10":             ("dusk_count", 10),
+    "evening_10":          ("evening_count", 10),
     "night_owl_10":        ("night_owl_count", 10),
     # 连续记录
     "streak_7":            ("streak", 7),
@@ -558,15 +582,27 @@ def compute_achievement_metrics(data):
     task_actions = [e for e in action_log if e.get("source", SOURCE_TASK) not in (SOURCE_ACH, SOURCE_CHECKIN)]
     backdate_count = sum(1 for e in task_actions if e.get("backdated", False))
     early_bird_count = 0
+    noon_count = 0
+    afternoon_count = 0
+    dusk_count = 0
+    evening_count = 0
     night_owl_count = 0
     for e in task_actions:
         try:
             hour = int(e.get("time", "")[11:13])
         except (ValueError, TypeError):
             continue
-        if 5 <= hour < 8:
+        if 7 <= hour < 11:
             early_bird_count += 1
-        elif hour >= 22:
+        elif 11 <= hour < 14:
+            noon_count += 1
+        elif 14 <= hour < 17:
+            afternoon_count += 1
+        elif 17 <= hour < 20:
+            dusk_count += 1
+        elif 20 <= hour < 22:
+            evening_count += 1
+        elif hour >= 22 or hour < 5:
             night_owl_count += 1
 
     total_earned = data.get("total_earned", 0)
@@ -590,6 +626,10 @@ def compute_achievement_metrics(data):
         "has_backdated": has_backdated,
         "backdate_count": backdate_count,
         "early_bird_count": early_bird_count,
+        "noon_count": noon_count,
+        "afternoon_count": afternoon_count,
+        "dusk_count": dusk_count,
+        "evening_count": evening_count,
         "night_owl_count": night_owl_count,
         "mood_count": mood_count,
         "weekly_report_streak": weekly_report_streak,
@@ -3436,6 +3476,7 @@ def page_achievements():
         "attribute":  "⭐ 属性成长",
         "resistance": "🧠 阻力复盘",
         "mood":       "🎭 心情系列",
+        "time":       "🕐 记录时段",
         "redeem":     "🎁 兑换成就",
         "daily":      "⚡ 挑战成就",
         "special":    "🎯 特殊时刻",
@@ -3449,12 +3490,15 @@ def page_achievements():
         "attribute":  "#CE82FF",
         "resistance": "#FF8C42",
         "mood":       "#FF6B9D",
+        "time":       "#00ACC1",
         "redeem":     "#E91E63",
         "daily":      "#3D5AFE",
         "special":    "#607D8B",
     }
     # 挑战组内指标展示顺序：单日得分 → 单日条数 → 四维均衡 → 单周 → 单月
     _daily_metric_order = ["today_total", "today_records", "all_four", "this_week_total", "monthly_active_days"]
+    # 时段组按一天的时间顺序排列
+    _time_metric_order = ["early_bird_count", "noon_count", "afternoon_count", "dusk_count", "evening_count", "night_owl_count"]
 
     def _ach_sort_key(ach):
         target = ACH_TARGETS.get(ach.get("id"))
@@ -3464,9 +3508,16 @@ def page_achievements():
         if ach.get("category") == "daily":
             idx = _daily_metric_order.index(metric) if metric in _daily_metric_order else len(_daily_metric_order)
             return (0, idx, threshold)
+        if ach.get("category") == "time":
+            idx = _time_metric_order.index(metric) if metric in _time_metric_order else len(_time_metric_order)
+            return (0, idx, threshold)
+        if ach.get("category") == "points":
+            # 等级换算成积分（1级=100分），与总分里程碑排成同一条阶梯
+            pts = threshold * 100 if metric == "total_level" else threshold
+            return (1, "", pts)
         return (1, metric, threshold)
 
-    for cat in ["starter", "streak", "checkin", "active", "points", "attribute", "resistance", "mood", "redeem", "daily", "special"]:
+    for cat in ["starter", "streak", "checkin", "active", "points", "attribute", "resistance", "mood", "time", "redeem", "daily", "special"]:
         cat_achs = [a for a in achievements if a.get("category") == cat]
         if not cat_achs:
             continue
