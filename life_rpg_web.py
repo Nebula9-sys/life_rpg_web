@@ -758,10 +758,33 @@ ATTR_TITLES = {
     "Willpower":    "🔥 意志坚定者",
     "Vitality":     "💚 活力满满",
 }
+# 成就解锁的称号：佩戴后显示在属性面板顶部（替代等级称号）
+TITLE_UNLOCK_DEFS = [
+    # (称号, 对应成就 id, 解锁方式)
+    ("🎮 启程者",      "first_task",       "解锁「启程」"),
+    ("🧠 直面者",      "first_resistance", "解锁「勇敢直面」"),
+    ("🔥 连击行者",    "streak_7",         "解锁「一周不断」"),
+    ("💎 连击大师",    "streak_30",        "解锁「月度连击」"),
+    ("🌟 百日传说",    "streak_100",       "解锁「百日连击」"),
+    ("📋 全勤守卫",    "checkin_streak_7", "解锁「一周全勤」"),
+    ("🌅 晨光者",      "early_bird_10",    "解锁「早鸟」"),
+    ("🦉 夜行者",      "night_owl_10",     "解锁「夜猫子」"),
+    ("🎯 均衡行者",    "all_attr_lv10",    "解锁「全属性Lv10」"),
+    ("🛡️ 阻力克星",    "resistance_30",    "解锁「阻力克星」"),
+    ("🎭 心情旅人",    "mood_50",          "解锁「心情达人」"),
+    ("🎁 生活鉴赏家",  "redeem_10",        "解锁「生活达人」"),
+    ("🏦 万分大佬",    "ten_thousand_pts", "解锁「万分大佬」"),
+]
 
 
 def get_titles(data):
-    """返回 (主称号, 属性称号)。主称号看总等级，属性称号看最高属性。"""
+    """返回 (主称号, 属性称号)。自选称号优先（需对应成就仍解锁），否则按总等级。"""
+    sel = data.get("selected_title")
+    if sel:
+        unlocked_ids = {a.get("id") for a in data.get("achievements", []) if a.get("unlocked")}
+        for name, ach_id, _ in TITLE_UNLOCK_DEFS:
+            if name == sel and ach_id in unlocked_ids:
+                return sel, None
     lv = data.get("total_earned", 0) // 100
     main = TITLE_DEFS[0][1]
     for min_lv, t in TITLE_DEFS:
@@ -1048,6 +1071,7 @@ def new_data():
         "rev": 0,               # 存档版本号（每次保存 +1）
         "saved_at": "",         # 最后一次保存时间
         "reports": [],          # 周报/月报存档
+        "selected_title": None, # 自选称号（称号馆佩戴；None = 按等级显示）
         "checkin_log": [],      # 每日签到日期记录 ["YYYY-MM-DD", ...]
         "checkin_cards": {"bought": 0, "used": 0, "earned_seen": 0},  # 补签卡：已购/已用/已结算的赠送进度
         "repaired_checkins": [],   # 用补签卡补上的日期（不计送卡进度、不补发当日积分）
@@ -1227,18 +1251,17 @@ def _local_file():
 
 
 def local_load():
-    candidates = [_local_file()]
-    if candidates[0] != LOCAL_FILE and os.path.exists(LOCAL_FILE):
-        candidates.append(LOCAL_FILE)  # 兼容旧版单文件存档（按用户隔离前的遗留）
-    for path in candidates:
-        if os.path.exists(path):
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    if isinstance(data, dict):
-                        return data
-            except Exception as e:
-                print(f"[local_load] {e!r}")
+    # 登录后只读本用户的隔离存档。不回退读旧版共用存档：共用档没有属主信息，
+    # 多用户共享磁盘时可能把别人的遗留数据并进自己的云端（云端才是数据源，本地只是缓存）
+    path = _local_file()
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                return data
+        except Exception as e:
+            print(f"[local_load] {e!r}")
     return None
 
 
@@ -1992,8 +2015,11 @@ with st.sidebar:
                 if cloud_data:
                     # 与云端按记录 ID 合并（不再整体覆盖，谁的数据都不丢）
                     merged, cloud_new, local_new = merge_data(data, cloud_data)
+                    # 迁移可能触发追溯解锁加分；前后快照对比，有变化就必须落盘（与 load_data 同款收口）
+                    before = json.dumps(merged, sort_keys=True, ensure_ascii=False)
                     merged = _migrate_data(merged)
-                    if cloud_new or local_new:
+                    after = json.dumps(merged, sort_keys=True, ensure_ascii=False)
+                    if cloud_new or local_new or before != after:
                         save_data(merged)
                         st.session_state.data = merged
                         data = merged
@@ -2001,6 +2027,8 @@ with st.sidebar:
                             flash_success(f"✅ 已从云端合并 {cloud_new} 条新记录")
                         elif local_new and not cloud_new:
                             flash_success(f"✅ 本地 {local_new} 条新记录已推送到云端")
+                        elif before != after:
+                            flash_success("✅ 迁移完成，更新已保存")
                         else:
                             flash_success(f"✅ 已合并云端 {cloud_new} 条、推送本地 {local_new} 条记录")
                     else:
@@ -2122,8 +2150,8 @@ with st.sidebar:
         save_data(data)
         st.session_state.authed = False
         st.session_state.data = None
-        st.session_state.pop("sb_email", None)
-        st.session_state.pop("sb_pwd", None)
+        st.session_state.pop("login_email", None)
+        st.session_state.pop("login_pwd", None)
         st.rerun()
     if st.button("🚪 退出账号", use_container_width=True):
         save_data(data)
@@ -2136,20 +2164,12 @@ with st.sidebar:
         st.session_state.authed = False
         st.session_state.data = None
         st.session_state["uid"] = None
-        st.session_state.pop("sb_email", None)
-        st.session_state.pop("sb_pwd", None)
         st.session_state.pop("login_email", None)
         st.session_state.pop("login_pwd", None)
         st.rerun()
 
 # -------- 属性面板（占位：实际渲染在文件末尾，确保即时刷新）--------
 stats_placeholder = st.container()
-
-# 供下方各 Tab 使用的积分（进入本次脚本时的值）
-stats = data["stats"]
-# ✅ 积分 = 累计赚的 - 累计花的（属性不再参与，永不被扣）
-total_spent = sum(r.get("cost", 0) for r in data.get("redemption_log", []))
-total = data.get("total_earned", 0) - total_spent
 
 st.markdown("---")
 
@@ -2853,9 +2873,114 @@ else:
     stats_charts_fragment = _stats_charts_impl
 
 
+def _insight_cards(data):
+    """从现有数据自动生成洞察卡片 [(emoji, 标题, 正文), ...]，数据不足的洞察不显示，最多 4 条"""
+    cards = []
+    daily = _get_daily_map(data)
+    action_log = data.get("action_log", [])
+    today = now_local().date()
+
+    # 黄金时段（与时段成就同窗口）
+    _bucket_names = ["🌅 早晨(7-11)", "🍱 午间(11-14)", "🌤️ 午后(14-17)", "🌆 傍晚(17-20)", "🌃 晚间(20-22)", "🦉 深夜(22-5)"]
+    buckets = [0] * 6
+    for e in action_log:
+        try:
+            h = int(e.get("time", "")[11:13])
+        except (ValueError, TypeError):
+            continue
+        if 7 <= h < 11:
+            buckets[0] += 1
+        elif 11 <= h < 14:
+            buckets[1] += 1
+        elif 14 <= h < 17:
+            buckets[2] += 1
+        elif 17 <= h < 20:
+            buckets[3] += 1
+        elif 20 <= h < 22:
+            buckets[4] += 1
+        else:
+            buckets[5] += 1
+    total_recs = sum(buckets)
+    if total_recs >= 10:
+        bi = buckets.index(max(buckets))
+        cards.append(("🕐", "黄金时段", f"你最常在{_bucket_names[bi]}记录，共 {buckets[bi]} 次（占 {buckets[bi] * 100 // total_recs}%）"))
+
+    # 高效星期
+    wd_tot = [0] * 7
+    wd_cnt = [0] * 7
+    for ds, dd in daily.items():
+        try:
+            wd = datetime.strptime(ds, "%Y-%m-%d").weekday()
+        except ValueError:
+            continue
+        wd_tot[wd] += dd.get("total", 0)
+        wd_cnt[wd] += 1
+    if sum(wd_cnt) >= 14:
+        bi = max(range(7), key=lambda i: wd_tot[i] / wd_cnt[i])
+        cards.append(("📅", "高效星期", f"周{'一二三四五六日'[bi]}是你的巅峰日，平均单日 {wd_tot[bi] / wd_cnt[bi]:.0f} 分"))
+
+    # 历史最长连击
+    longest = cur = 0
+    prev = None
+    for ds in sorted(daily.keys()):
+        try:
+            d = datetime.strptime(ds, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        cur = cur + 1 if (prev and (d - prev).days == 1) else 1
+        longest = max(longest, cur)
+        prev = d
+    if longest >= 3:
+        cards.append(("🔥", "连击巅峰", f"你的历史最长连击是 {longest} 天"))
+
+    # 心情风向
+    moods = {}
+    for e in action_log:
+        m = e.get("mood")
+        if m:
+            moods[m] = moods.get(m, 0) + 1
+    _mood_total = sum(moods.values())
+    if _mood_total >= 10:
+        bm = max(moods, key=moods.get)
+        cards.append(("🎭", "心情风向", f"最常记录的心情是 {bm}，占 {moods[bm] * 100 // _mood_total}%"))
+
+    # 记录密度
+    dates = sorted(daily.keys())
+    if dates and len(action_log) >= 10:
+        cards.append(("📈", "记录密度", f"平均每个活跃日记录 {len(action_log) / len(dates):.1f} 条"))
+
+    # 本月势头（vs 上月同期）
+    this_m = today.strftime("%Y-%m")
+    _last_m_end = today.replace(day=1) - timedelta(days=1)
+    last_m = _last_m_end.strftime("%Y-%m")
+    last_day_n = min(today.day, _last_m_end.day)
+    tm = sum(dd.get("total", 0) for ds, dd in daily.items() if ds[:7] == this_m)
+    lm = sum(dd.get("total", 0) for ds, dd in daily.items() if ds[:7] == last_m and int(ds[8:10]) <= last_day_n)
+    if lm >= 20:
+        pct = (tm - lm) * 100 // lm
+        if pct >= 10:
+            cards.append(("🚀", "本月势头", f"本月得分比上月同期高 {pct}%，状态在线"))
+        elif pct <= -10:
+            cards.append(("🌱", "本月势头", f"本月比上月同期少 {-pct}%，没关系，慢慢来"))
+
+    return cards[:4]
+
+
 def page_stats():
         show_flash_message("stats")
         st.markdown("### 📊 统计")
+
+        # ---- 数据洞察 ----
+        _insights = _insight_cards(data)
+        if _insights:
+            st.markdown("#### 💡 数据洞察")
+            st.caption("根据你的历史记录自动生成，数据越多洞察越准")
+            for _i0 in range(0, len(_insights), 2):
+                _icols = st.columns(2)
+                for _ii, (_iemo, _ititle, _itext) in enumerate(_insights[_i0:_i0 + 2]):
+                    with _icols[_ii]:
+                        st.markdown(f"**{_iemo} {_ititle}**  \n{_itext}")
+            st.markdown("---")
 
         # ---- 周报 / 月报 ----
         with st.expander("📋 周报 / 月报", expanded=False):
@@ -3371,7 +3496,7 @@ def page_settings():
             del_r_idx = st.selectbox(
                 "选择要删除的奖励",
                 range(len(data["rewards"])),
-                format_func=lambda i: f"{data['rewards'][i]['name']} ({data['rewards'][i]['cost']} pts)",
+                format_func=lambda i: f"{data['rewards'][i].get('name', '?')} ({data['rewards'][i].get('cost', 0)} pts)",
                 key="del_reward",
             )
             if st.button("🗑️ 删除选中奖励"):
@@ -3463,6 +3588,26 @@ def page_achievements():
     st.progress(len(unlocked) / max(len(achievements), 1))
     st.markdown("---")
 
+    # ---- 称号馆 ----
+    st.markdown("#### 🎖️ 称号馆")
+    st.caption("达成指定成就解锁称号，点击佩戴后替换属性面板顶部的等级称号；再次点击可卸下")
+    _unlocked_ids = {a.get("id") for a in achievements if a.get("unlocked")}
+    _sel_title = data.get("selected_title")
+    for _t0 in range(0, len(TITLE_UNLOCK_DEFS), 3):
+        _tcols = st.columns(3)
+        for _ti, (_tname, _tach_id, _thow) in enumerate(TITLE_UNLOCK_DEFS[_t0:_t0 + 3]):
+            with _tcols[_ti]:
+                if _tach_id in _unlocked_ids:
+                    _label = f"✅ {_tname}" if _sel_title == _tname else _tname
+                    if st.button(_label, key=f"wear_{_tach_id}", use_container_width=True):
+                        data["selected_title"] = None if _sel_title == _tname else _tname
+                        save_data(data)
+                        st.session_state.data = data
+                        st.rerun()
+                else:
+                    st.caption(f"🔒 {_tname} · {_thow}")
+    st.markdown("---")
+
     # 指标算一次，供锁定成就显示进度（与判定共用同一来源）
     ach_metrics = compute_achievement_metrics(data)
     today_for_new = now_local().date()
@@ -3499,12 +3644,17 @@ def page_achievements():
     _daily_metric_order = ["today_total", "today_records", "all_four", "this_week_total", "monthly_active_days"]
     # 时段组按一天的时间顺序排列
     _time_metric_order = ["early_bird_count", "noon_count", "afternoon_count", "dusk_count", "evening_count", "night_owl_count"]
+    # 新手组按定义顺序：记录 → 阻力 → 兑换 → 补记
+    _starter_metric_order = ["task_count", "resistance_count", "redeem_count", "backdate_count"]
 
     def _ach_sort_key(ach):
         target = ACH_TARGETS.get(ach.get("id"))
         if target is None:
             return (2, 0, ach.get("name", ""))
         metric, threshold = target
+        if ach.get("category") == "starter":
+            idx = _starter_metric_order.index(metric) if metric in _starter_metric_order else len(_starter_metric_order)
+            return (0, idx, threshold)
         if ach.get("category") == "daily":
             idx = _daily_metric_order.index(metric) if metric in _daily_metric_order else len(_daily_metric_order)
             return (0, idx, threshold)
