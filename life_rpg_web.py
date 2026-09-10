@@ -6,7 +6,6 @@
 """
 
 import streamlit as st
-import requests
 import json
 import os
 import random
@@ -1019,8 +1018,6 @@ def get_secret(key, fallback):
 
 SB_URL        = get_secret("SUPABASE_URL", SUPABASE_URL)
 SB_KEY        = get_secret("SUPABASE_ANON_KEY", SUPABASE_ANON_KEY)
-JSONBIN_KEY   = get_secret("JSONBIN_API_KEY", JSONBIN_API_KEY)
-JSONBIN_BIN   = get_secret("JSONBIN_BIN_ID", JSONBIN_BIN_ID)
 
 # ---------- Session State 初始化 ----------
 for k, v in {"authed": False, "data": None, "theme": "🌌 莫兰迪蓝", "uid": None, "user_email": ""}.items():
@@ -1222,27 +1219,6 @@ def cloud_save(data):
         return False
 
 
-def jsonbin_load():
-    """一次性迁移：从旧 JSONBin 存档拉取（仅 Supabase 无数据时调用）"""
-    if not JSONBIN_KEY or not JSONBIN_BIN:
-        return None
-    try:
-        r = requests.get(
-            "https://api.jsonbin.io/v3/b/" + JSONBIN_BIN + "/latest",
-            headers={"X-Master-Key": JSONBIN_KEY},
-            timeout=10,
-        )
-        if r.status_code == 200:
-            record = r.json().get("record")
-            if isinstance(record, dict):
-                return record
-        else:
-            print(f"[jsonbin_load] HTTP {r.status_code}: {r.text[:200]}")
-    except Exception as e:
-        print(f"[jsonbin_load] {e!r}")
-    return None
-
-
 def _local_file():
     """本地存档文件名：登录后按用户隔离，避免云部署多用户共用容器磁盘时串档"""
     uid = st.session_state.get("uid")
@@ -1407,11 +1383,6 @@ def load_data():
     sb_row_missing = cloud is None
     local = local_load()
     push_needed = False
-    if cloud is None:
-        # Supabase 首次使用：从旧 JSONBin 存档一次性迁移（之后不再读 JSONBin）
-        jb = jsonbin_load()
-        if jb:
-            cloud = jb
     if cloud and local:
         # 云端、本地都存在：按记录 ID 做并集合并，谁都不丢
         data, cloud_new, local_new = merge_data(local, cloud)
