@@ -3231,8 +3231,9 @@ def page_stats():
             )])
             fig_donut.update_layout(
                 showlegend=False,
-                margin=dict(t=20, b=20, l=20, r=20),
-                height=280,
+                # 外部标签需要足够的边缘空间，否则被裁切
+                margin=dict(t=60, b=60, l=40, r=40),
+                height=340,
             )
             st.plotly_chart(fig_donut, use_container_width=True)
         else:
@@ -3348,8 +3349,9 @@ def page_stats():
                     textposition="outside",
                 )])
                 fig_mood_pie.update_layout(
-                    height=250,
-                    margin=dict(t=10, b=10, l=10, r=10),
+                    # 外部标签需要足够的边缘空间，否则被裁切（极端占比时小切片标签会向外扇开）
+                    height=320,
+                    margin=dict(t=60, b=60, l=30, r=30),
                     showlegend=False,
                 )
                 st.plotly_chart(fig_mood_pie, use_container_width=True)
