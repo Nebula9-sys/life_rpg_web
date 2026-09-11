@@ -386,7 +386,7 @@ ACHIEVEMENT_DEFS = [
 
 # ---------- 成就指标（判定与进度显示共用同一来源） ----------
 # 布尔型指标（只看 0/1，进度条不显示）
-_BOOL_METRICS = {"all_four", "has_comeback", "has_backdated"}
+_BOOL_METRICS = {"best_day_all_four", "has_comeback", "has_backdated"}
 
 # 成就 id -> (指标名, 达成阈值)
 ACH_TARGETS = {
@@ -433,13 +433,13 @@ ACH_TARGETS = {
     "consumed_1000":       ("total_consumed", 1000),
     "consumed_2000":       ("total_consumed", 2000),
     "consumed_5000":       ("total_consumed", 5000),
-    # 单日
-    "daily_30":            ("today_total", 30),
-    "daily_50":            ("today_total", 50),
-    "daily_100":           ("today_total", 100),
-    "daily_5_records":     ("today_records", 5),
-    "daily_10_records":    ("today_records", 10),
-    "daily_balanced":      ("all_four", 1),
+    # 单日（按历史任一天最佳成绩判定，补录计入对应日期）
+    "daily_30":            ("best_day_total", 30),
+    "daily_50":            ("best_day_total", 50),
+    "daily_100":           ("best_day_total", 100),
+    "daily_5_records":     ("best_day_records", 5),
+    "daily_10_records":    ("best_day_records", 10),
+    "daily_balanced":      ("best_day_all_four", 1),
     "weekly_200":          ("this_week_total", 200),
     # 记录 / 任务
     "first_task":          ("task_count", 1),
@@ -499,13 +499,32 @@ def compute_achievement_metrics(data):
 
     today_str = now_local().strftime("%Y-%m-%d")
     today_date = now_local().date()
-    today_actions = [e for e in action_log if e.get("time", "")[:10] == today_str and e.get("source", SOURCE_TASK) not in (SOURCE_ACH, SOURCE_CHECKIN)]
-    today_resist = [r for r in resistance_log if r.get("time", "")[:10] == today_str]
-    today_total = sum(e.get("points", 0) for e in today_actions) + len(today_resist)
-    today_attrs = set(e.get("attribute", "") for e in today_actions if e.get("points", 0) > 0)
-    if today_resist:
-        today_attrs.add("Willpower")
-    all_four = all(a in today_attrs for a in VALID_ATTRS)
+
+    # —— 单日最佳：按记录归属日期分组统计，补录计入对应日期，历史任一天达标即解锁 ——
+    day_stats = {}
+    for e in action_log:
+        if e.get("source", SOURCE_TASK) in (SOURCE_ACH, SOURCE_CHECKIN):
+            continue
+        ds = e.get("time", "")[:10]
+        if not ds:
+            continue
+        d = day_stats.setdefault(ds, {"pts": 0, "attrs": set(), "n": 0})
+        pts = e.get("points", 0)
+        d["pts"] += pts
+        d["n"] += 1
+        if pts > 0:
+            d["attrs"].add(e.get("attribute", ""))
+    for r in resistance_log:
+        ds = r.get("time", "")[:10]
+        if not ds:
+            continue
+        d = day_stats.setdefault(ds, {"pts": 0, "attrs": set(), "n": 0})
+        d["pts"] += 1
+        d["n"] += 1
+        d["attrs"].add("Willpower")
+    best_day_total = max((d["pts"] for d in day_stats.values()), default=0)
+    best_day_records = max((d["n"] for d in day_stats.values()), default=0)
+    best_day_all_four = any(all(a in d["attrs"] for a in VALID_ATTRS) for d in day_stats.values())
 
     streak = calc_streak(daily_set, today_date)
 
@@ -612,9 +631,9 @@ def compute_achievement_metrics(data):
         "resistance_count": len(resistance_log),
         "redeem_count": len(redemption_log),
         "total_consumed": total_consumed,
-        "today_total": today_total,
-        "today_records": len(today_actions) + len(today_resist),
-        "all_four": all_four,
+        "best_day_total": best_day_total,
+        "best_day_records": best_day_records,
+        "best_day_all_four": best_day_all_four,
         "this_week_total": this_week_total,
         "task_count": len(task_actions),
         "total_records": len(task_actions) + len(resistance_log),
@@ -3697,7 +3716,7 @@ def page_achievements():
         "special":    "#607D8B",
     }
     # 挑战组内指标展示顺序：单日得分 → 单日条数 → 四维均衡 → 单周 → 单月
-    _daily_metric_order = ["today_total", "today_records", "all_four", "this_week_total", "monthly_active_days"]
+    _daily_metric_order = ["best_day_total", "best_day_records", "best_day_all_four", "this_week_total", "monthly_active_days"]
     # 时段组按一天的时间顺序排列
     _time_metric_order = ["early_bird_count", "noon_count", "afternoon_count", "dusk_count", "evening_count", "night_owl_count"]
     # 新手组按定义顺序：记录 → 阻力 → 兑换 → 补记
